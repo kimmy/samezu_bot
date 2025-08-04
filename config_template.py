@@ -8,13 +8,18 @@ if not TELEGRAM_BOT_TOKEN:
 
 # Multiple users configuration
 # Format: "chat_id": {"name": "User Name", "notify_no_slots": True/False, "notify_slots": True, "notify_errors": True}
-# Read from environment variable
+# Read from environment variable with fallback
 try:
-    TELEGRAM_USERS = json.loads(os.getenv('TELEGRAM_USERS', '{}'))
-    if not TELEGRAM_USERS:
-        raise ValueError("TELEGRAM_USERS environment variable is required")
-except (json.JSONDecodeError, TypeError):
-    raise ValueError("TELEGRAM_USERS must be a valid JSON string")
+    telegram_users_env = os.getenv('TELEGRAM_USERS', '{}')
+    if telegram_users_env and telegram_users_env != '{}':
+        TELEGRAM_USERS = json.loads(telegram_users_env)
+    else:
+        # Fallback to empty dict - users will be managed through /subscribe command
+        TELEGRAM_USERS = {}
+except (json.JSONDecodeError, TypeError) as e:
+    print(f"Warning: Invalid TELEGRAM_USERS format: {e}")
+    # Fallback to empty dict
+    TELEGRAM_USERS = {}
 
 # Target Website Configuration
 TARGET_URL = "https://www.keishicho-gto.metro.tokyo.lg.jp/keishicho-u/reserve/offerList_detail?tempSeq=445&accessFrom=offerList"
