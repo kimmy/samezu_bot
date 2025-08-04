@@ -4,6 +4,8 @@ import json
 # Telegram Bot Configuration
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 if not TELEGRAM_BOT_TOKEN:
+    print("ERROR: TELEGRAM_BOT_TOKEN environment variable is required")
+    print("Please set this in your Railway environment variables")
     raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
 
 # Multiple users configuration
@@ -16,6 +18,7 @@ try:
     else:
         # Fallback to empty dict - users will be managed through /subscribe command
         TELEGRAM_USERS = {}
+        print("INFO: No TELEGRAM_USERS configured, users will be managed via /subscribe command")
 except (json.JSONDecodeError, TypeError) as e:
     print(f"Warning: Invalid TELEGRAM_USERS format: {e}")
     # Fallback to empty dict
