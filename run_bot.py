@@ -30,13 +30,14 @@ class SamezuBot:
         """Remove a chat_id from the subscribers file if present."""
         try:
             with open(self.SUBSCRIBERS_FILE, 'r') as f:
-                ids = set(line.strip() for line in f if line.strip())
-            if str(chat_id) in ids:
-                ids.remove(str(chat_id))
-                with open(self.SUBSCRIBERS_FILE, 'w') as f:
-                    for cid in ids:
-                        f.write(f"{cid}\n")
-                logger.info(f"Removed subscriber: {chat_id}")
+                lines = f.readlines()
+            
+            with open(self.SUBSCRIBERS_FILE, 'w') as f:
+                for line in lines:
+                    if not line.strip().startswith(f"{chat_id}|") and line.strip() != str(chat_id):
+                        f.write(line)
+            
+            logger.info(f"Removed subscriber: {chat_id}")
         except FileNotFoundError:
             pass
         except Exception as e:
@@ -46,7 +47,9 @@ class SamezuBot:
         """Handle /unsubscribe command."""
         chat_id = update.effective_chat.id
         subscribers = self.get_subscribers()
-        if str(chat_id) not in subscribers:
+        existing_ids = [sub[0] for sub in subscribers]
+        
+        if str(chat_id) not in existing_ids:
             await update.message.reply_text(
                 "ℹ️ You are not currently subscribed.",
                 parse_mode='HTML'
@@ -100,42 +103,80 @@ class SamezuBot:
                 continue
     SUBSCRIBERS_FILE = 'subscribers.txt'
 
-    def add_subscriber(self, chat_id):
+    def add_subscriber(self, chat_id, user_info=None):
         """Add a chat_id to the subscribers file if not already present."""
         try:
             with open(self.SUBSCRIBERS_FILE, 'a+') as f:
                 f.seek(0)
-                ids = set(line.strip() for line in f if line.strip())
-                if str(chat_id) not in ids:
-                    f.write(f"{chat_id}\n")
+                lines = f.readlines()
+                existing_ids = set()
+                for line in lines:
+                    if '|' in line:
+                        existing_id = line.split('|')[0].strip()
+                    else:
+                        existing_id = line.strip()
+                    existing_ids.add(existing_id)
+                
+                if str(chat_id) not in existing_ids:
+                    # Store user info for tagging
+                    if user_info:
+                        user_line = f"{chat_id}|{user_info}\n"
+                    else:
+                        user_line = f"{chat_id}\n"
+                    f.write(user_line)
                     logger.info(f"Added new subscriber: {chat_id}")
         except Exception as e:
             logger.error(f"Failed to add subscriber: {e}")
 
     def get_subscribers(self):
-        """Return a set of all subscriber chat_ids as strings."""
+        """Return a list of subscriber info (chat_id, user_info)."""
         try:
             with open(self.SUBSCRIBERS_FILE, 'r') as f:
-                return set(line.strip() for line in f if line.strip())
+                subscribers = []
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        if '|' in line:
+                            chat_id, user_info = line.split('|', 1)
+                            subscribers.append((chat_id.strip(), user_info.strip()))
+                        else:
+                            subscribers.append((line, None))
+                return subscribers
         except FileNotFoundError:
-            return set()
+            return []
         except Exception as e:
             logger.error(f"Failed to read subscribers: {e}")
-            return set()
+            return []
 
     async def subscribe_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /subscribe command."""
         chat_id = update.effective_chat.id
+        user = update.effective_user
+        
+        # Create user info for tagging
+        user_info = ""
+        if user.username:
+            user_info = f"@{user.username}"
+        elif user.first_name:
+            user_info = user.first_name
+            if user.last_name:
+                user_info += f" {user.last_name}"
+        else:
+            user_info = f"User{chat_id}"
+        
         subscribers = self.get_subscribers()
-        if str(chat_id) in subscribers:
+        existing_ids = [sub[0] for sub in subscribers]
+        
+        if str(chat_id) in existing_ids:
             await update.message.reply_text(
                 "ℹ️ You are already subscribed and will receive notifications when slots are found.",
                 parse_mode='HTML'
             )
         else:
-            self.add_subscriber(chat_id)
+            self.add_subscriber(chat_id, user_info)
             await update.message.reply_text(
-                "✅ You are now subscribed! You will receive notifications when slots are found.",
+                f"✅ You are now subscribed! You will receive notifications when slots are found.\n\n"
+                f"👤 You'll be tagged as: {user_info}",
                 parse_mode='HTML'
             )
     def __init__(self):

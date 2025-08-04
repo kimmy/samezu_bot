@@ -39,20 +39,35 @@ class ReservationChecker:
         """Send message to all subscribed users (only for slot notifications)."""
         try:
             with open('subscribers.txt', 'r') as f:
-                subscribers = set(line.strip() for line in f if line.strip())
+                subscribers = []
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        if '|' in line:
+                            chat_id, user_info = line.split('|', 1)
+                            subscribers.append((chat_id.strip(), user_info.strip()))
+                        else:
+                            subscribers.append((line, None))
         except FileNotFoundError:
-            subscribers = set()
+            subscribers = []
         except Exception as e:
             logger.error(f"Failed to read subscribers: {e}")
-            subscribers = set()
-        for chat_id in subscribers:
+            subscribers = []
+        
+        for chat_id, user_info in subscribers:
             try:
+                # Add user mention to the message
+                if user_info:
+                    tagged_message = f"🔔 {user_info}\n\n{message}"
+                else:
+                    tagged_message = message
+                
                 await self.bot.send_message(
                     chat_id=int(chat_id),
-                    text=message,
+                    text=tagged_message,
                     parse_mode='HTML'
                 )
-                logger.info(f"Telegram message sent successfully to subscriber {chat_id}")
+                logger.info(f"Telegram message sent successfully to subscriber {chat_id} ({user_info})")
             except Exception as e:
                 logger.error(f"Failed to send Telegram message to subscriber {chat_id}: {e}")
     
