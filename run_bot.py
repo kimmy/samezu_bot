@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from reservation_checker import ReservationChecker
-from config_template import TELEGRAM_BOT_TOKEN, TELEGRAM_USERS, CHECK_INTERVAL
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USERS, CHECK_INTERVAL
 
 # Set up logging
 logging.basicConfig(

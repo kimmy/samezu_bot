@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import List, Dict, Tuple
 from playwright.async_api import async_playwright, Page
 from telegram import Bot
-from config_template import (
+from config import (
     TELEGRAM_BOT_TOKEN, 
     TARGET_URL, 
     TARGET_FACILITIES,
