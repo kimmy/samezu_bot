@@ -84,6 +84,28 @@ A Python-based reservation checker for Samezu facilities that sends Telegram not
    TELEGRAM_USERS={"YOUR_CHAT_ID": {"name": "Your Name", "notify_no_slots": true, "notify_slots": true, "notify_errors": true}}
    ```
 
+## Dual Environment Setup: Local vs Railway
+
+### Local Development
+- Copy `config_template.py` to `config.py` and fill in your real credentials (do NOT commit `config.py`).
+- Or, set environment variables in your shell for local testing.
+- All scripts import `config` (which is your local copy).
+
+### Railway Deployment
+- Do NOT use `config.py` (it is not in the repo and not needed).
+- Set all secrets (e.g., `TELEGRAM_BOT_TOKEN`, `TELEGRAM_USERS`) as environment variables in the Railway dashboard.
+- Railway will use `config_template.py` (which reads from environment variables).
+
+### Security
+- Never commit real credentials to Git.
+- `config.py` is in `.gitignore` and only exists locally.
+
+### Example
+- For local: `cp config_template.py config.py` and edit values.
+- For Railway: set env vars only, no file changes needed.
+
+---
+
 ## Usage
 
 ### Basic Usage
@@ -189,4 +211,4 @@ Check `reservation_checker.log` for detailed error messages and debugging inform
 
 ## License
 
-This project is for personal use only. 
+This project is for personal use only.

@@ -12,7 +12,11 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from reservation_checker import ReservationChecker
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USERS, CHECK_INTERVAL
+# Try to import from config_template first (for Railway), fallback to config (for local)
+try:
+    from config_template import TELEGRAM_BOT_TOKEN, TELEGRAM_USERS, CHECK_INTERVAL
+except ImportError:
+    from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USERS, CHECK_INTERVAL
 
 # Set up logging
 logging.basicConfig(

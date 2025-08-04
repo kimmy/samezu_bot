@@ -1,17 +1,26 @@
+
+# =====================
+# Config for Samezu Bot
+#
+# - For local dev: copy this file to config.py and fill in real values below.
+# - For Railway: set environment variables in dashboard, do not use config.py.
+# - This file is safe to commit (no secrets).
+# =====================
+
 import os
 import json
 
 # Telegram Bot Configuration
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
+# Use environment variable if available, otherwise use placeholder
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "YOUR_BOT_TOKEN_HERE")
 
 # Multiple users configuration
 # Format: "chat_id": {"name": "User Name", "notify_no_slots": True/False, "notify_slots": True, "notify_errors": True}
-# Read from environment variable with fallback
+# Read from environment variable or use empty dict
 try:
-    telegram_users_env = os.getenv('TELEGRAM_USERS', '{}')
-    if telegram_users_env and telegram_users_env != '{}':
+    # Try to get users from environment variable first
+    telegram_users_env = os.getenv('TELEGRAM_USERS')
+    if telegram_users_env:
         TELEGRAM_USERS = json.loads(telegram_users_env)
     else:
         # Fallback to empty dict - users will be managed through /subscribe command
@@ -36,4 +45,4 @@ LOG_FILE = "reservation_checker.log"
 
 # Browser Configuration
 HEADLESS = True  # Set to False for debugging
-TIMEOUT = 30000  # 30 seconds timeout 
+TIMEOUT = 30000  # 30 seconds timeout
