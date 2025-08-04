@@ -343,8 +343,11 @@ class ReservationChecker:
                 browser = await p.chromium.launch(headless=HEADLESS)
                 logger.info("✅ Browser launched successfully")
 
-                context = await browser.new_context()
-                logger.info("✅ Browser context created")
+                context = await browser.new_context(
+                    locale='ja-JP',
+                    timezone_id='Asia/Tokyo'
+                )
+                logger.info("✅ Browser context created with Japanese locale")
 
                 async def block_resource(route, request):
                     if request.resource_type in ["image", "stylesheet", "font"]:
@@ -357,11 +360,23 @@ class ReservationChecker:
                 page = await context.new_page()
                 logger.info("✅ New page created")
 
-                # Set user agent to avoid detection
+                # Set comprehensive headers to appear as Japanese user
                 await page.set_extra_http_headers({
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                    'X-Forwarded-For': '203.0.113.1',  # Japanese IP range
+                    'CF-IPCountry': 'JP',  # Cloudflare country header
+                    'X-Real-IP': '203.0.113.1',
+                    'X-Forwarded-Proto': 'https',
+                    'X-Forwarded-Host': 'www.keishicho-gto.metro.tokyo.lg.jp',
+                    'Referer': 'https://www.keishicho-gto.metro.tokyo.lg.jp/'
                 })
-                logger.info("✅ User agent set")
+                logger.info("✅ Browser headers set")
 
                 logger.info(f"🔍 Navigating to: {TARGET_URL}")
                 try:
@@ -379,6 +394,17 @@ class ReservationChecker:
                     # Check if we got redirected
                     if current_url != TARGET_URL:
                         logger.warning(f"⚠️ Redirected from {TARGET_URL} to {current_url}")
+                    
+                    # Debug page content for Railway
+                    try:
+                        page_content = await page.content()
+                        if "e-TUMO" in page_content:
+                            logger.warning("⚠️ Detected e-TUMO page - might be error/redirect page")
+                        if "error" in page_content.lower() or "not found" in page_content.lower():
+                            logger.error("🚨 Page appears to be an error page")
+                        logger.info(f"📄 Page content length: {len(page_content)} characters")
+                    except Exception as content_error:
+                        logger.error(f"❌ Could not get page content: {content_error}")
 
                 except Exception as nav_error:
                     logger.error(f"❌ Navigation failed: {nav_error}")
