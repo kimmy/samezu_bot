@@ -348,8 +348,19 @@ class ReservationChecker:
                     logger.info("No available slots found")
                     return "❌ No slots"
         except Exception as e:
+            error_msg = str(e)
+            # Clean up error message to avoid HTML parsing issues
+            if "Host system is missing dependencies" in error_msg:
+                error_msg = "❌ Browser dependencies missing on server. Please contact administrator."
+            elif "Can't parse entities" in error_msg:
+                error_msg = "❌ Error processing response. Please try again."
+            else:
+                # Remove any HTML-like characters that might cause parsing issues
+                error_msg = error_msg.replace("<", "&lt;").replace(">", "&gt;")
+                error_msg = f"❌ Error during reservation check: {error_msg}"
+            
             logger.error(f"Error during reservation check: {e}")
-            return f"❌ <b>Error during reservation check</b>\n\nError: {str(e)}"
+            return error_msg
     
     async def process_available_slots(self, slots: List[Dict], send_notifications=True):
         """Format available slots for notification or user display."""

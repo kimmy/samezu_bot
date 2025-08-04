@@ -283,9 +283,15 @@ The bot will automatically notify you when slots become available.
                 # Send result to all waiting users in parallel
                 async def send_result(user_id, chat_id):
                     try:
+                        # Clean up result message to avoid HTML parsing issues
+                        clean_result = result
+                        if "❌" in result and ("<" in result or ">" in result):
+                            # If it's an error message with HTML, clean it up
+                            clean_result = result.replace("<", "&lt;").replace(">", "&gt;")
+                        
                         await context.bot.send_message(
                             chat_id=chat_id,
-                            text=result,
+                            text=clean_result,
                             parse_mode='HTML'
                         )
                         logger.info(f"Sent result to user {user_id} in chat {chat_id}.")
@@ -297,9 +303,12 @@ The bot will automatically notify you when slots become available.
                 # Notify all waiting users of the error in parallel
                 async def send_error(user_id, chat_id):
                     try:
+                        error_msg = f"❌ Error during check: {str(e)}"
+                        # Clean up error message
+                        error_msg = error_msg.replace("<", "&lt;").replace(">", "&gt;")
                         await context.bot.send_message(
                             chat_id=chat_id,
-                            text=f"❌ Error during check: {str(e)}"
+                            text=error_msg
                         )
                     except Exception as e2:
                         logger.error(f"Failed to send error to user {user_id}: {e2}")
