@@ -12,11 +12,11 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from reservation_checker import ReservationChecker
-# Try to import from config_template first (for Railway), fallback to config (for local)
+# Try to import from config first (for local), fallback to config_template (for Railway)
 try:
-    from config_template import TELEGRAM_BOT_TOKEN, TELEGRAM_USERS, CHECK_INTERVAL
-except ImportError:
     from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USERS, CHECK_INTERVAL
+except ImportError:
+    from config_template import TELEGRAM_BOT_TOKEN, TELEGRAM_USERS, CHECK_INTERVAL
 
 # Set up logging
 logging.basicConfig(
@@ -35,12 +35,12 @@ class SamezuBot:
         try:
             with open(self.SUBSCRIBERS_FILE, 'r') as f:
                 lines = f.readlines()
-            
+
             with open(self.SUBSCRIBERS_FILE, 'w') as f:
                 for line in lines:
                     if not line.strip().startswith(f"{chat_id}|") and line.strip() != str(chat_id):
                         f.write(line)
-            
+
             logger.info(f"Removed subscriber: {chat_id}")
         except FileNotFoundError:
             pass
@@ -52,7 +52,7 @@ class SamezuBot:
         chat_id = update.effective_chat.id
         subscribers = self.get_subscribers()
         existing_ids = [sub[0] for sub in subscribers]
-        
+
         if str(chat_id) not in existing_ids:
             await update.message.reply_text(
                 "ℹ️ You are not currently subscribed.",
@@ -86,18 +86,18 @@ class SamezuBot:
     async def _scheduler_loop(self):
         """Background loop that checks for slots every CHECK_INTERVAL seconds"""
         logger.info(f"⏰ Starting scheduler loop with {CHECK_INTERVAL} second intervals")
-        
+
         while True:
             try:
                 await asyncio.sleep(CHECK_INTERVAL)
                 logger.info("🔄 Running scheduled check...")
-                
+
                 # Run the reservation check with notifications enabled
                 result = await self.reservation_checker.run_check(send_notifications=True)
                 self.update_cache(result)
-                
+
                 logger.info("✅ Scheduled check completed")
-                
+
             except asyncio.CancelledError:
                 logger.info("🛑 Scheduler loop cancelled")
                 break
@@ -120,7 +120,7 @@ class SamezuBot:
                     else:
                         existing_id = line.strip()
                     existing_ids.add(existing_id)
-                
+
                 if str(chat_id) not in existing_ids:
                     # Store user info for tagging
                     if user_info:
@@ -156,7 +156,7 @@ class SamezuBot:
         """Handle /subscribe command."""
         chat_id = update.effective_chat.id
         user = update.effective_user
-        
+
         # Create user info for tagging
         user_info = ""
         if user.username:
@@ -167,10 +167,10 @@ class SamezuBot:
                 user_info += f" {user.last_name}"
         else:
             user_info = f"User{chat_id}"
-        
+
         subscribers = self.get_subscribers()
         existing_ids = [sub[0] for sub in subscribers]
-        
+
         if str(chat_id) in existing_ids:
             await update.message.reply_text(
                 "ℹ️ You are already subscribed and will receive notifications when slots are found.",
@@ -189,14 +189,14 @@ class SamezuBot:
         self.check_lock = asyncio.Lock()  # Only one check at a time
         self.waiting_users = set()  # Track users waiting for a check result
         self.scheduler_task = None  # Background scheduler task
-        
+
         # Cache for check results (2 minutes)
         self.cache = {
             'result': None,
             'timestamp': None,
             'cache_duration': 120  # 2 minutes in seconds
         }
-        
+
         # Add command handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("check", self.check_command))
@@ -204,27 +204,27 @@ class SamezuBot:
         self.application.add_handler(CommandHandler("status", self.status_command))
         self.application.add_handler(CommandHandler("subscribe", self.subscribe_command))
         self.application.add_handler(CommandHandler("unsubscribe", self.unsubscribe_command))
-    
+
     def is_cache_valid(self):
         """Check if the cached result is still valid (within 2 minutes)."""
         if not self.cache['result'] or not self.cache['timestamp']:
             return False
-        
+
         elapsed_time = time.time() - self.cache['timestamp']
         return elapsed_time < self.cache['cache_duration']
-    
+
     def update_cache(self, result):
         """Update the cache with new result and timestamp."""
         self.cache['result'] = result
         self.cache['timestamp'] = time.time()
         logger.info(f"Cache updated with new result at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
+
     def get_cache_age(self):
         """Get the age of the cached result in seconds."""
         if not self.cache['timestamp']:
             return None
         return time.time() - self.cache['timestamp']
-    
+
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         welcome_message = """
@@ -238,9 +238,9 @@ This bot helps you check for available driving test reservation slots.
 
 The bot will automatically notify you when slots become available.
         """
-        
+
         await update.message.reply_text(welcome_message, parse_mode='HTML')
-    
+
     async def check_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /check command"""
         user_id = update.effective_user.id
@@ -292,7 +292,7 @@ The bot will automatically notify you when slots become available.
                         if "❌" in result and ("<" in result or ">" in result):
                             # If it's an error message with HTML, clean it up
                             clean_result = result.replace("<", "&lt;").replace(">", "&gt;")
-                        
+
                         await context.bot.send_message(
                             chat_id=chat_id,
                             text=clean_result,
@@ -319,7 +319,7 @@ The bot will automatically notify you when slots become available.
                 await asyncio.gather(*(send_error(user_id, chat_id) for user_id, chat_id in self.waiting_users))
             finally:
                 self.waiting_users.clear()
-    
+
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
         help_message = f"""
@@ -353,9 +353,9 @@ The bot will automatically notify you when slots become available.
 • Subscribers receive notifications when slots are found
 • No manual intervention required
         """
-        
+
         await update.message.reply_text(help_message, parse_mode='HTML')
-    
+
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command"""
         # Since we now use a lock, we can't check per-user status, but we can check if a check is in progress
@@ -378,39 +378,39 @@ class BotRunner:
     def __init__(self):
         self.bot = SamezuBot()
         self.running = True
-        
+
     async def start(self):
         """Start the bot"""
         logger.info("🚀 Starting Samezu Bot...")
-        
+
         # Set up signal handlers for graceful shutdown
         def signal_handler(signum, frame):
             logger.info("Received shutdown signal, stopping bot...")
             self.running = False
-            
+
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
-        
+
         try:
             # Clear any existing webhook first
             await self.bot.application.bot.delete_webhook()
             logger.info("✅ Webhook cleared")
-            
+
             await self.bot.application.initialize()
             await self.bot.application.start()
             await self.bot.application.updater.start_polling()
-            
+
             # Start the automatic scheduler
             await self.bot.start_scheduler()
-            
+
             logger.info("✅ Bot is running! Send /start to your bot to test it.")
             logger.info(f"⏰ Automatic checking enabled every {CHECK_INTERVAL} seconds")
             logger.info("Press Ctrl+C to stop the bot.")
-            
+
             # Keep the bot running
             while self.running:
                 await asyncio.sleep(1)
-                
+
         except Exception as e:
             logger.error(f"❌ Error starting bot: {e}")
             raise
@@ -419,7 +419,7 @@ class BotRunner:
             try:
                 # Stop the scheduler first
                 await self.bot.stop_scheduler()
-                
+
                 await self.bot.application.updater.stop()
                 await self.bot.application.stop()
                 await self.bot.application.shutdown()
