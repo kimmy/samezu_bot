@@ -1,8 +1,6 @@
-# Sensitive configuration files
+# Environment and configuration files
 config.py
 .env
-
-# Logs
 *.log
 
 # Python

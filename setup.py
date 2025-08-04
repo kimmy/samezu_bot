@@ -1,46 +1,63 @@
 #!/usr/bin/env python3
 """
-Setup script for Tokyo Police Department Reservation Checker
-Helps users create their configuration file securely.
+Setup script for Samezu Bot
+Helps users configure their environment variables and create config.py
 """
 
 import os
+import json
 import shutil
 
-def main():
-    print("🔧 Setting up Tokyo Police Department Reservation Checker")
-    print("=" * 50)
-    
-    # Check if config.py already exists
-    if os.path.exists("config.py"):
-        print("⚠️  config.py already exists!")
-        overwrite = input("Do you want to overwrite it? (y/n): ").strip().lower()
-        if overwrite != 'y':
-            print("Setup cancelled.")
-            return
-    
-    # Copy template to config.py
-    if os.path.exists("config_template.py"):
-        shutil.copy("config_template.py", "config.py")
-        print("✅ Created config.py from template")
+def create_config_from_template():
+    """Create config.py from template if it doesn't exist"""
+    if not os.path.exists('config.py'):
+        if os.path.exists('config_template.py'):
+            shutil.copy('config_template.py', 'config.py')
+            print("✅ Created config.py from template")
+            print("⚠️  Please update config.py with your actual bot token and chat IDs")
+        else:
+            print("❌ config_template.py not found")
+            return False
     else:
-        print("❌ config_template.py not found!")
-        return
+        print("✅ config.py already exists")
+    return True
+
+def setup_environment_variables():
+    """Guide user to set up environment variables"""
+    print("\n🔧 Environment Variables Setup")
+    print("=" * 40)
     
-    print("\n📝 Next steps:")
-    print("1. Edit config.py with your bot token and chat IDs")
-    print("2. Run: python manage_users.py (to add users)")
-    print("3. Run: python test_bot.py (to test your bot)")
-    print("4. Run: python reservation_checker.py (to test the checker)")
+    print("\nTo use GitHub secrets (recommended):")
+    print("1. Go to your GitHub repository")
+    print("2. Navigate to Settings > Secrets and variables > Actions")
+    print("3. Add these secrets:")
+    print()
+    print("   TELEGRAM_BOT_TOKEN:")
+    print("   Value: your_bot_token_here")
+    print()
+    print("   TELEGRAM_USERS:")
+    print("   Value: {\"YOUR_CHAT_ID\": {\"name\": \"Your Name\", \"notify_no_slots\": true, \"notify_slots\": true, \"notify_errors\": true}}")
+    print()
     
-    print("\n🔒 Security notes:")
-    print("- config.py is in .gitignore (won't be committed to git)")
-    print("- Keep your bot token and chat IDs private")
-    print("- Never share your config.py file")
+    print("For local development, create a .env file:")
+    print("TELEGRAM_BOT_TOKEN=your_bot_token_here")
+    print("TELEGRAM_USERS={\"YOUR_CHAT_ID\": {\"name\": \"Your Name\", \"notify_no_slots\": true, \"notify_slots\": true, \"notify_errors\": true}}")
+
+def main():
+    print("🚀 Samezu Bot Setup")
+    print("=" * 40)
     
-    print("\n📖 For help:")
-    print("- See README.md for detailed instructions")
-    print("- Use manage_users.py to manage users easily")
+    # Create config.py from template
+    if create_config_from_template():
+        setup_environment_variables()
+        
+        print("\n✅ Setup complete!")
+        print("\nNext steps:")
+        print("1. Update config.py with your bot token and chat IDs")
+        print("2. Or set up GitHub secrets for production")
+        print("3. Run: python reservation_checker.py")
+    else:
+        print("❌ Setup failed")
 
 if __name__ == "__main__":
     main() 
