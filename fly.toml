@@ -7,9 +7,6 @@ primary_region = "nrt"  # Tokyo region
 
 [build]
 
-[env]
-  PORT = "8080"
-
 # This is a background worker, not a web service
 [processes]
   app = "python run_bot.py"
