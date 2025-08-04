@@ -13,7 +13,6 @@ from playwright.async_api import async_playwright, Page
 from telegram import Bot
 from config import (
     TELEGRAM_BOT_TOKEN, 
-    TELEGRAM_USERS, 
     TARGET_URL, 
     TARGET_FACILITIES,
     HEADLESS,
@@ -36,27 +35,26 @@ class ReservationChecker:
         self.bot = Bot(token=TELEGRAM_BOT_TOKEN)
         self.available_slots = []
         
-    async def send_telegram_message(self, message: str, message_type: str = "general"):
-        """Send message to Telegram users based on their preferences."""
-        for chat_id, user_config in TELEGRAM_USERS.items():
+    async def send_telegram_message(self, message: str):
+        """Send message to all subscribed users (only for slot notifications)."""
+        try:
+            with open('subscribers.txt', 'r') as f:
+                subscribers = set(line.strip() for line in f if line.strip())
+        except FileNotFoundError:
+            subscribers = set()
+        except Exception as e:
+            logger.error(f"Failed to read subscribers: {e}")
+            subscribers = set()
+        for chat_id in subscribers:
             try:
-                # Check if user wants this type of notification
-                if message_type == "no_slots" and not user_config.get("notify_no_slots", False):
-                    continue
-                elif message_type == "slots" and not user_config.get("notify_slots", True):
-                    continue
-                elif message_type == "errors" and not user_config.get("notify_errors", True):
-                    continue
-                
-                # Send the message
                 await self.bot.send_message(
-                    chat_id=chat_id,
+                    chat_id=int(chat_id),
                     text=message,
                     parse_mode='HTML'
                 )
-                logger.info(f"Telegram message sent successfully to {user_config.get('name', chat_id)}")
+                logger.info(f"Telegram message sent successfully to subscriber {chat_id}")
             except Exception as e:
-                logger.error(f"Failed to send Telegram message to {chat_id}: {e}")
+                logger.error(f"Failed to send Telegram message to subscriber {chat_id}: {e}")
     
     async def wait_for_page_load(self, page: Page):
         """Wait for the page to load completely."""
@@ -303,73 +301,80 @@ class ReservationChecker:
             logger.warning(f"Error checking for end of dates: {e}")
             return False
     
-    async def run_check(self):
+    async def run_check(self, send_notifications=True):
         """Main method to run the reservation check."""
         logger.info("Starting reservation check...")
-        
         try:
             async with async_playwright() as p:
-                # Launch browser
                 browser = await p.chromium.launch(headless=HEADLESS)
                 context = await browser.new_context()
+
+                async def block_resource(route, request):
+                    if request.resource_type in ["image", "stylesheet", "font"]:
+                        await route.abort()
+                    else:
+                        await route.continue_()
+                await context.route("**/*", block_resource)
+
                 page = await context.new_page()
-                
-                # Navigate to the target URL
                 logger.info(f"Navigating to: {TARGET_URL}")
                 await page.goto(TARGET_URL, timeout=TIMEOUT)
-                
-                # Check all weeks for availability
+
                 available_slots = await self.check_all_weeks(page)
-                
-                # Close browser
                 await browser.close()
-                
-                # Process results
+
                 if available_slots:
-                    await self.process_available_slots(available_slots)
+                    result_message = await self.process_available_slots(available_slots, send_notifications)
+                    # Only notify subscribers if this is a scheduled/cron run
+                    if send_notifications:
+                        await self.send_telegram_message(result_message)
+                    return result_message
                 else:
                     logger.info("No available slots found")
-                    # Send a simple "no slots" message with timestamp
-                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    await self.send_telegram_message(f"❌ No slots\nLast checked: {current_time}", "no_slots")
-                
+                    return "❌ No slots"
         except Exception as e:
-            error_msg = f"❌ <b>Error during reservation check</b>\n\nError: {str(e)}"
             logger.error(f"Error during reservation check: {e}")
-            await self.send_telegram_message(error_msg, "errors")
+            return f"❌ <b>Error during reservation check</b>\n\nError: {str(e)}"
     
-    async def process_available_slots(self, slots: List[Dict]):
-        """Process and send notification for available slots."""
-        # Group slots by date and facility
+    async def process_available_slots(self, slots: List[Dict], send_notifications=True):
+        """Format available slots for notification or user display."""
+        if not slots:
+            return ""
+
         slots_by_date_facility = {}
         for slot in slots:
             date = slot['date']
             facility = slot['facility']
             applicant_type = slot['applicant_type']
-            
+            link = slot.get('link', TARGET_URL)
             if date not in slots_by_date_facility:
                 slots_by_date_facility[date] = {}
             if facility not in slots_by_date_facility[date]:
                 slots_by_date_facility[date][facility] = []
-            slots_by_date_facility[date][facility].append(applicant_type)
-        
+            slots_by_date_facility[date][facility].append({
+                'applicant_type': applicant_type,
+                'link': link
+            })
+
         # Create message
         message = "🎉 <b>Available Reservation Slots Found!</b>\n\n"
         message += f"📍 <b>Facilities:</b> {', '.join(TARGET_FACILITIES)}\n\n"
-        
+        message += "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
+
         for date, facilities in slots_by_date_facility.items():
             message += f"📅 <b>{date}</b>\n"
-            for facility, applicant_types in facilities.items():
+            for facility, slot_details in facilities.items():
                 message += f"   🏢 <b>{facility}</b>\n"
-                for applicant_type in applicant_types:
-                    message += f"      • {applicant_type}\n"
+                for detail in slot_details:
+                    applicant_type = detail['applicant_type']
+                    link = detail['link']
+                    message += f"      • {applicant_type} — <a href='{link}'>Book</a>\n"
             message += "\n"
-        
-        message += f"🔗 <a href='{TARGET_URL}'>Book Now</a>"
-        
-        # Send notification
-        await self.send_telegram_message(message, "slots")
-        logger.info(f"Sent notification for {len(slots)} available slots")
+
+        if not any(slot.get('link') for slot in slots):
+            message += f"🔗 <a href='{TARGET_URL}'>Book Now</a>"
+
+        return message
 
 async def main():
     """Main entry point."""
