@@ -202,6 +202,7 @@ class SamezuBot:
         self.application.add_handler(CommandHandler("check", self.check_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("status", self.status_command))
+        self.application.add_handler(CommandHandler("cache", self.cache_command))
         self.application.add_handler(CommandHandler("subscribe", self.subscribe_command))
         self.application.add_handler(CommandHandler("unsubscribe", self.unsubscribe_command))
     
@@ -234,6 +235,7 @@ This bot helps you check for available driving test reservation slots.
 
 <b>Available commands:</b>
 /check - Check for available slots
+/cache - Show cache information
 /help - Show this help message
 
 The bot will automatically notify you when slots become available.
@@ -335,6 +337,7 @@ The bot will automatically notify you when slots become available.
 /start - Welcome message
 /check - Manually check for available slots
 /status - Check bot status
+/cache - Show detailed cache information
 /help - Show this help message
 
 <b>Features:</b>
@@ -379,6 +382,49 @@ The bot will automatically notify you when slots become available.
         else:
             status_message = f"✅ <b>Status</b>\n\n🟢 You're ready to use commands.\n\nYou can use /check to start a reservation check.{cache_status}"
         await update.message.reply_text(status_message, parse_mode='HTML')
+
+    async def cache_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /cache command - show detailed cache information"""
+        if not self.cache['timestamp']:
+            await update.message.reply_text(
+                "📊 <b>Cache Information</b>\n\n"
+                "❌ <b>No cached data available</b>\n\n"
+                "The cache is empty. Run /check to populate the cache.",
+                parse_mode='HTML'
+            )
+            return
+
+        # Calculate cache age
+        cache_age = self.get_cache_age()
+        cache_age_minutes = int(cache_age // 60)
+        cache_age_seconds = int(cache_age % 60)
+        
+        # Format timestamp
+        from datetime import datetime
+        cache_time = datetime.fromtimestamp(self.cache['timestamp'])
+        formatted_time = cache_time.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Check if cache is still valid
+        is_valid = self.is_cache_valid()
+        validity_status = "✅ Valid" if is_valid else "❌ Expired"
+        
+        # Get cache duration in minutes
+        cache_duration_minutes = self.cache['cache_duration'] // 60
+        
+        # Create detailed message
+        message = f"📊 <b>Cache Information</b>\n\n"
+        message += f"🕒 <b>Last Update:</b> {formatted_time}\n"
+        message += f"⏱️ <b>Age:</b> {cache_age_minutes}m {cache_age_seconds}s\n"
+        message += f"⏳ <b>Status:</b> {validity_status}\n"
+        message += f"⏰ <b>Cache Duration:</b> {cache_duration_minutes} minutes\n\n"
+        
+        if is_valid:
+            message += "💡 <b>Note:</b> Using cached data for faster responses.\n"
+            message += "Use /check force to bypass cache and get fresh data."
+        else:
+            message += "💡 <b>Note:</b> Cache has expired. Next /check will fetch fresh data."
+        
+        await update.message.reply_text(message, parse_mode='HTML')
 
 class BotRunner:
     def __init__(self):

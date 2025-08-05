@@ -92,6 +92,7 @@ Once the bot is running, you can use these commands in Telegram:
 - `/check` - Manually check for available slots (uses cache if available)
 - `/check force` or `/check -f` - Force a fresh check, ignoring the cache
 - `/status` - Check bot status and last check time
+- `/cache` - Show detailed cache information and timestamp
 - `/help` - Show available commands
 
 ### Automatic Checking
