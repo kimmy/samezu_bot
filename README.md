@@ -89,7 +89,8 @@ python run_bot.py
 Once the bot is running, you can use these commands in Telegram:
 
 - `/start` - Welcome message and bot status
-- `/check` - Manually check for available slots
+- `/check` - Manually check for available slots (uses cache if available)
+- `/check force` or `/check -f` - Force a fresh check, ignoring the cache
 - `/status` - Check bot status and last check time
 - `/help` - Show available commands
 

@@ -245,13 +245,19 @@ The bot will automatically notify you when slots become available.
         """Handle /check command"""
         user_id = update.effective_user.id
         user_name = update.effective_user.first_name or "User"
-        logger.info(f"User {user_name} ({user_id}) issued /check command.")
+        # Parse arguments for force option
+        force_check = False
+        if context.args:
+            args_lower = [arg.lower() for arg in context.args]
+            if "force" in args_lower or "-f" in args_lower:
+                force_check = True
+        logger.info(f"User {user_name} ({user_id}) issued /check command. force={force_check}")
         # Always send the "checking" message first
         await update.message.reply_text(f"🔍 Checking for available slots...\n\nPlease wait, this may take up to 30 seconds.")
         await asyncio.sleep(0)
 
-        # If we have a valid cache, reply immediately
-        if self.is_cache_valid():
+        # If we have a valid cache, reply immediately (unless force is requested)
+        if self.is_cache_valid() and not force_check:
             cache_age = self.get_cache_age()
             cache_age_minutes = int(cache_age // 60)
             cache_age_seconds = int(cache_age % 60)
