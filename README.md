@@ -1,14 +1,15 @@
 # Samezu Bot
 
-A Python-based reservation checker for Samezu facilities that sends Telegram notifications when slots become available.
+A Python-based Telegram bot that automatically checks for available driving test slots at Samezu facilities and sends notifications when slots become available.
 
 ## Features
 
-- 🔍 **Automated Checking**: Monitors multiple facilities for available slots
+- 🔍 **Automated Checking**: Monitors 府中試験場 and 鮫洲試験場 for available slots
 - 📱 **Telegram Notifications**: Sends instant notifications when slots are found
 - ⚙️ **Flexible Configuration**: Support for multiple users with customizable notification preferences
-- 🔒 **Secure**: Uses GitHub secrets for sensitive data
+- 🔒 **Secure**: Local configuration with sensitive data kept private
 - 🚀 **Easy Setup**: Simple installation and configuration process
+- ⏰ **Scheduled Checking**: Automatically checks every 5 minutes
 
 ## Requirements
 
@@ -43,100 +44,67 @@ A Python-based reservation checker for Samezu facilities that sends Telegram not
 
 ## Configuration
 
-### Option 1: GitHub Secrets (Recommended for Production)
+### Local Setup
 
-1. **Go to your GitHub repository**
-2. **Navigate to Settings > Secrets and variables > Actions**
-3. **Add these secrets:**
-
-   **TELEGRAM_BOT_TOKEN:**
-   ```
-   your_bot_token_here
-   ```
-
-   **TELEGRAM_USERS:**
-   ```json
-   {
-     "YOUR_CHAT_ID": {
-       "name": "Your Name",
-       "notify_no_slots": true,
-       "notify_slots": true,
-       "notify_errors": true
-     }
+1. **Update config.py with your credentials:**
+   ```python
+   # Telegram Bot Configuration
+   TELEGRAM_BOT_TOKEN = "your_actual_bot_token_here"
+   
+   # User configuration
+   TELEGRAM_USERS = {
+       "YOUR_CHAT_ID": {
+           "name": "Your Name",
+           "notify_no_slots": True,
+           "notify_slots": True,
+           "notify_errors": True
+       }
    }
    ```
 
-### Option 2: Local Development
+2. **Get your Telegram Bot Token:**
+   - Message @BotFather on Telegram
+   - Create a new bot: `/newbot`
+   - Copy the token provided
 
-1. **Run the setup script:**
-   ```bash
-   python setup.py
-   ```
-
-2. **Update config.py with your credentials:**
-   - Replace `YOUR_BOT_TOKEN_HERE` with your actual bot token
-   - Replace `YOUR_CHAT_ID_HERE` with your chat ID
-   - Update the user name and notification preferences
-
-3. **Or create a .env file:**
-   ```
-   TELEGRAM_BOT_TOKEN=your_bot_token_here
-   TELEGRAM_USERS={"YOUR_CHAT_ID": {"name": "Your Name", "notify_no_slots": true, "notify_slots": true, "notify_errors": true}}
-   ```
-
-## Dual Environment Setup: Local vs Railway
-
-### Local Development
-- Copy `config_template.py` to `config.py` and fill in your real credentials (do NOT commit `config.py`).
-- Or, set environment variables in your shell for local testing.
-- All scripts import `config` (which is your local copy).
-
-### Railway Deployment
-- Do NOT use `config.py` (it is not in the repo and not needed).
-- Set all secrets (e.g., `TELEGRAM_BOT_TOKEN`, `TELEGRAM_USERS`) as environment variables in the Railway dashboard.
-- Railway will use `config_template.py` (which reads from environment variables).
-
-### Security
-- Never commit real credentials to Git.
-- `config.py` is in `.gitignore` and only exists locally.
-
-### Example
-- For local: `cp config_template.py config.py` and edit values.
-- For Railway: set env vars only, no file changes needed.
-
----
+3. **Get your Chat ID:**
+   - Message your bot
+   - Visit: `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
+   - Look for your `chat_id` in the response
 
 ## Usage
 
-### Basic Usage
+### Start the Bot
 
 ```bash
 # Activate virtual environment
 source venv/bin/activate
 
-# Run the reservation checker
-python reservation_checker.py
+# Run the bot
+python run_bot.py
 ```
 
-### Manage Users
+### Bot Commands
 
-```bash
-# Add, remove, or update users
-python manage_users.py
-```
+Once the bot is running, you can use these commands in Telegram:
 
-### Test Your Bot
+- `/start` - Welcome message and bot status
+- `/check` - Manually check for available slots
+- `/status` - Check bot status and last check time
+- `/help` - Show available commands
 
-```bash
-# Test if your bot is working
-python test_bot.py
-```
+### Automatic Checking
+
+The bot automatically checks for slots every 5 minutes. You'll receive notifications when:
+- ✅ Slots become available
+- ❌ No slots are found (if enabled)
+- ⚠️ Errors occur during checking
 
 ## Configuration Options
 
 ### User Notification Preferences
 
-Each user can configure their notification preferences:
+Each user can configure their notification preferences in `config.py`:
 
 - `notify_no_slots`: Receive "no slots" messages (default: true)
 - `notify_slots`: Receive detailed slot notifications (default: true)
@@ -146,69 +114,90 @@ Each user can configure their notification preferences:
 
 Modify `CHECK_INTERVAL` in `config.py` to change how often the bot checks for slots (default: 300 seconds = 5 minutes).
 
-## Scheduling
+### Target Facilities
 
-### Linux/macOS (cron)
+The bot checks these facilities by default:
+- 府中試験場 (Fuchu Test Center)
+- 鮫洲試験場 (Samezu Test Center)
 
-```bash
-# Edit crontab
-crontab -e
+You can modify `TARGET_FACILITIES` in `config.py` to add or remove facilities.
 
-# Add this line to run every 5 minutes
-*/5 * * * * cd /path/to/samezu_bot && /path/to/venv/bin/python reservation_checker.py
-```
+## Running Locally
 
-### Windows (Task Scheduler)
+### Keep Your Laptop Awake
 
-1. Open Task Scheduler
-2. Create Basic Task
-3. Set trigger to run every 5 minutes
-4. Set action to run: `python reservation_checker.py`
+Since you're running locally, make sure your laptop stays awake:
+
+- **macOS**: System Preferences > Energy Saver > Prevent computer from sleeping
+- **Windows**: Power & Sleep settings > Never sleep
+- **Linux**: Disable sleep mode in power management
+
+### Background Running
+
+The bot will continue running even if you lock your laptop, but it will stop if your laptop goes to sleep.
 
 ## Troubleshooting
 
 ### Common Issues
 
 1. **"externally-managed-environment" error:**
-   - Use virtual environment: `python3 -m venv venv && source venv/bin/activate`
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
 
 2. **Playwright browser issues:**
-   - Reinstall browsers: `playwright install chromium`
+   ```bash
+   playwright install chromium
+   ```
 
 3. **Telegram bot not responding:**
-   - Check your bot token in config.py
-   - Test with: `python test_bot.py`
+   - Check your bot token in `config.py`
+   - Make sure you've messaged your bot first
+   - Try the `/start` command
 
-4. **SSH push issues:**
-   - Verify SSH key is added: `ssh-add -l`
-   - Test connection: `ssh -T git@github.com`
+4. **Import errors:**
+   - Make sure you're in the virtual environment
+   - Check that all dependencies are installed
 
 ### Logs
 
-Check `reservation_checker.log` for detailed error messages and debugging information.
+Check `bot.log` for detailed error messages and debugging information.
 
 ## Security
 
-- ✅ Sensitive data stored in GitHub secrets
-- ✅ config.py excluded from Git (.gitignore)
-- ✅ Environment variables for local development
-- ✅ Template-based configuration
+- ✅ Sensitive data stored locally in `config.py`
+- ✅ `config.py` excluded from Git (`.gitignore`)
+- ✅ No credentials committed to repository
+- ✅ Local-only deployment
+
+## Project Structure
+
+```
+samezu_bot/
+├── run_bot.py              # Main bot script
+├── reservation_checker.py   # Web scraping logic
+├── config.py               # Local configuration (not in Git)
+├── requirements.txt         # Python dependencies
+├── README.md              # This file
+├── .gitignore             # Git ignore rules
+├── venv/                  # Virtual environment
+├── bot.log                # Bot logs
+└── subscribers.txt        # User subscriptions
+```
 
 ## Built With
 
-- **Cursor** - AI-powered code editor that helped build this project
 - **Python** - Core programming language
 - **Playwright** - Web automation and scraping
 - **python-telegram-bot** - Telegram bot API integration
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+- **asyncio** - Asynchronous programming
 
 ## License
 
 This project is for personal use only.
+
+---
+
+**Note**: This bot is designed for local use only. For 24/7 operation, consider deploying to a cloud service like Railway, Render, or Fly.io.
