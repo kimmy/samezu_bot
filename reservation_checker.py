@@ -11,9 +11,9 @@ from datetime import datetime
 from typing import List, Dict, Tuple
 from playwright.async_api import async_playwright, Page
 from telegram import Bot
-# Try to import from config_template first (for Railway), fallback to config (for local)
+# Try to import from config first (for local), fallback to config_template (for Railway)
 try:
-    from config_template import (
+    from config import (
         TELEGRAM_BOT_TOKEN,
         TARGET_URL,
         TARGET_FACILITIES,
@@ -21,7 +21,7 @@ try:
         TIMEOUT
     )
 except ImportError:
-    from config import (
+    from config_template import (
         TELEGRAM_BOT_TOKEN,
         TARGET_URL,
         TARGET_FACILITIES,
@@ -333,6 +333,7 @@ class ReservationChecker:
         # Log environment info for debugging
         import platform
         import os
+        import time
         logger.info(f"🔧 Environment: Python {platform.python_version()}, OS: {platform.system()}")
         logger.info(f"🔧 Headless mode: {HEADLESS}, Timeout: {TIMEOUT}ms")
 
