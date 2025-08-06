@@ -19,7 +19,6 @@ try:
         TARGET_FACILITIES,
         HEADLESS,
         TIMEOUT,
-        USE_MONTH_NAVIGATION,
         SHOW_ONLY_RELEVANT_APPLICANTS
     )
 except ImportError:
@@ -29,7 +28,6 @@ except ImportError:
         TARGET_FACILITIES,
         HEADLESS,
         TIMEOUT,
-        USE_MONTH_NAVIGATION,
         SHOW_ONLY_RELEVANT_APPLICANTS
     )
 

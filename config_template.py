@@ -8,27 +8,10 @@
 # =====================
 
 import os
-import json
 
 # Telegram Bot Configuration
 # Use environment variable if available, otherwise use placeholder
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "YOUR_BOT_TOKEN_HERE")
-
-# Multiple users configuration
-# Format: "chat_id": {"name": "User Name", "notify_no_slots": True/False, "notify_slots": True, "notify_errors": True}
-# Read from environment variable or use empty dict
-try:
-    # Try to get users from environment variable first
-    telegram_users_env = os.getenv('TELEGRAM_USERS')
-    if telegram_users_env:
-        TELEGRAM_USERS = json.loads(telegram_users_env)
-    else:
-        # Fallback to empty dict - users will be managed through /subscribe command
-        TELEGRAM_USERS = {}
-except (json.JSONDecodeError, TypeError) as e:
-    print(f"Warning: Invalid TELEGRAM_USERS format: {e}")
-    # Fallback to empty dict
-    TELEGRAM_USERS = {}
 
 # Target Website Configuration
 TARGET_URL = "https://www.keishicho-gto.metro.tokyo.lg.jp/keishicho-u/reserve/offerList_detail?tempSeq=445&accessFrom=offerList"
@@ -44,6 +27,9 @@ SHOW_ONLY_RELEVANT_APPLICANTS = True
 # Check interval in seconds
 CHECK_INTERVAL = 300  # 5 minutes
 
+# Cache duration in seconds
+CACHE_DURATION = 120  # 2 minutes
+
 # Logging configuration
 LOG_LEVEL = "INFO"
 LOG_FILE = "reservation_checker.log"
@@ -51,6 +37,3 @@ LOG_FILE = "reservation_checker.log"
 # Browser Configuration
 HEADLESS = True  # Set to False for debugging
 TIMEOUT = 30000  # 30 seconds timeout
-
-# Navigation Configuration
-USE_MONTH_NAVIGATION = False  # Set to True to use "1か月後" button, False to use "2週後" button (default)
