@@ -200,6 +200,7 @@ class SamezuBot:
         # Add command handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("check", self.check_command))
+        self.application.add_handler(CommandHandler("check_month", self.check_month_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("status", self.status_command))
         self.application.add_handler(CommandHandler("cache", self.cache_command))
@@ -235,7 +236,8 @@ class SamezuBot:
 This bot helps you check for available driving test reservation slots.
 
 <b>Available commands:</b>
-/check - Check for available slots
+/check - Check for available slots (2-week navigation)
+/check_month - Check for available slots (1-month navigation)
 /link - Get the reservation system website
 /cache - Show cache information
 /help - Show this help message
@@ -287,12 +289,54 @@ The bot will automatically notify you when slots become available.
         logger.info(f"User {user_name} ({user_id}) starting background check task.")
         self.application.create_task(self._background_check_task(context))
 
-    async def _background_check_task(self, context: ContextTypes.DEFAULT_TYPE):
+    async def check_month_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /check_month command - check using month navigation"""
+        user_id = update.effective_user.id
+        user_name = update.effective_user.first_name or "User"
+        # Parse arguments for force option
+        force_check = False
+        if context.args:
+            args_lower = [arg.lower() for arg in context.args]
+            if "force" in args_lower or "-f" in args_lower:
+                force_check = True
+        logger.info(f"User {user_name} ({user_id}) issued /check_month command. force={force_check}")
+        # Always send the "checking" message first
+        await update.message.reply_text(f"🔍 Checking for available slots using month navigation...\n\nPlease wait, this may take up to 30 seconds.")
+        await asyncio.sleep(0)
+
+        # If we have a valid cache, reply immediately (unless force is requested)
+        if self.is_cache_valid() and not force_check:
+            cache_age = self.get_cache_age()
+            cache_age_minutes = int(cache_age // 60)
+            cache_age_seconds = int(cache_age % 60)
+            logger.info(f"User {user_name} ({user_id}) received cached result before background task.")
+            await update.message.reply_text(
+                f"⚡ <b>Using cached result</b>\n\n"
+                f"📊 Result from {cache_age_minutes}m {cache_age_seconds}s ago:\n\n"
+                f"{self.cache['result']}",
+                parse_mode='HTML'
+            )
+            logger.info(f"Using cached result for {user_name} ({user_id}) - cache age: {cache_age_minutes}m {cache_age_seconds}s")
+            return
+
+        # Add user to waiting set
+        self.waiting_users.add((user_id, update.effective_chat.id))
+
+        # If a check is already running, just return (user will get result when ready)
+        if self.check_lock.locked():
+            logger.info(f"User {user_name} ({user_id}) queued for result.")
+            return
+
+        # Otherwise, start a background task for the check with month navigation
+        logger.info(f"User {user_name} ({user_id}) starting background check task with month navigation.")
+        self.application.create_task(self._background_check_task(context, use_month_navigation=True))
+
+    async def _background_check_task(self, context: ContextTypes.DEFAULT_TYPE, use_month_navigation=False):
         async with self.check_lock:
             try:
                 logger.info(f"Background check task started. Notifying {len(self.waiting_users)} users.")
-                # Run the reservation check
-                result = await self.reservation_checker.run_check(send_notifications=False)
+                # Run the reservation check with optional month navigation
+                result = await self.reservation_checker.run_check(send_notifications=False, use_month_navigation=use_month_navigation)
                 self.update_cache(result)
                 # Send result to all waiting users in parallel
                 async def send_result(user_id, chat_id):
@@ -337,7 +381,8 @@ The bot will automatically notify you when slots become available.
 
 <b>Commands:</b>
 /start - Welcome message
-/check - Manually check for available slots
+/check - Manually check for available slots (2-week navigation)
+/check_month - Manually check for available slots (1-month navigation)
 /link - Get the reservation system website
 /status - Check bot status
 /cache - Show detailed cache information
@@ -346,7 +391,8 @@ The bot will automatically notify you when slots become available.
 <b>Features:</b>
 • <b>Automatic slot monitoring</b> - Checks every {CHECK_INTERVAL} seconds
 • Instant notifications when slots become available
-• Manual slot checking with /check command
+• Manual slot checking with /check command (2-week navigation)
+• Manual slot checking with /check_month command (1-month navigation)
 • Direct website access with /link command
 • Concurrent checking - multiple users can check simultaneously
 • Smart caching - results cached for 2 minutes to avoid repeated scraping
@@ -365,6 +411,10 @@ The bot will automatically notify you when slots become available.
 • Bot automatically checks for slots every {CHECK_INTERVAL} seconds
 • Subscribers receive notifications when slots are found
 • No manual intervention required
+
+<b>Navigation options:</b>
+• <b>/check</b> - Uses "2週後" (2 weeks later) button for navigation
+• <b>/check_month</b> - Uses "1か月後" (1 month later) button for navigation
         """
         
         await update.message.reply_text(help_message, parse_mode='HTML')

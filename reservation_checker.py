@@ -18,7 +18,8 @@ try:
         TARGET_URL,
         TARGET_FACILITIES,
         HEADLESS,
-        TIMEOUT
+        TIMEOUT,
+        USE_MONTH_NAVIGATION
     )
 except ImportError:
     from config_template import (
@@ -26,7 +27,8 @@ except ImportError:
         TARGET_URL,
         TARGET_FACILITIES,
         HEADLESS,
-        TIMEOUT
+        TIMEOUT,
+        USE_MONTH_NAVIGATION
     )
 
 # Configure logging
@@ -200,15 +202,14 @@ class ReservationChecker:
 
         return available_slots
 
-    async def check_all_weeks(self, page: Page) -> List[Dict]:
-        """Check all available weeks for reservations."""
+    async def _check_periods(self, page: Page, navigation_type: str, max_periods: int = 20) -> List[Dict]:
+        """Core method to check all available periods for reservations."""
         all_available_slots = []
-        week_count = 0
-        max_weeks = 20  # Safety limit to prevent infinite loops
+        period_count = 0
 
-        while week_count < max_weeks:
-            week_count += 1
-            logger.info(f"🔄 Checking week {week_count}")
+        while period_count < max_periods:
+            period_count += 1
+            logger.info(f"🔄 Checking {navigation_type} {period_count}")
 
             # Wait for page to load
             await self.wait_for_page_load(page)
@@ -222,19 +223,23 @@ class ReservationChecker:
             current_slots = await self.get_available_dates(page)
             all_available_slots.extend(current_slots)
 
-            # Log summary for this week
+            # Log summary for this period
             if current_slots:
-                logger.info(f"🎯 Week {week_count}: Found {len(current_slots)} available slots")
+                logger.info(f"🎯 {navigation_type.capitalize()} {period_count}: Found {len(current_slots)} available slots")
             else:
-                logger.info(f"📭 Week {week_count}: No available slots found")
+                logger.info(f"📭 {navigation_type.capitalize()} {period_count}: No available slots found")
 
-            # Check for "Next 2 Weeks" button with better detection
+            # Check for navigation button
             try:
-                # Look for the next button with multiple selectors
-                next_button = await page.query_selector('input[value="2週後＞"]')
+                if navigation_type == "month":
+                    # Use "1か月後" (1 month later) button
+                    next_button = await page.query_selector('input[value="1か月後＞"]')
+                else:
+                    # Use "2週後" (2 weeks later) button
+                    next_button = await page.query_selector('input[value="2週後＞"]')
 
                 if not next_button:
-                    logger.info("Next button not found - reached end of available dates")
+                    logger.info(f"Next {navigation_type} button not found - reached end of available dates")
                     break
 
                 # Check if button is disabled or has no-click attribute
@@ -243,16 +248,16 @@ class ReservationChecker:
                 aria_label = await next_button.get_attribute('aria-label')
 
                 # Log button status for debugging
-                logger.info(f"🔘 Next button status - disabled: {is_disabled}, enabled: {is_clickable}, aria-label: {aria_label}")
+                logger.info(f"🔘 Next {navigation_type} button status - disabled: {is_disabled}, enabled: {is_clickable}, aria-label: {aria_label}")
 
                 # If button is disabled or not clickable, we've reached the end
                 if is_disabled or not is_clickable:
-                    logger.info("Next button is disabled/not clickable - reached end of available dates")
+                    logger.info(f"Next {navigation_type} button is disabled/not clickable - reached end of available dates")
                     break
 
                 # Try to click the button
                 await next_button.click()
-                logger.info("✅ Successfully clicked next button")
+                logger.info(f"✅ Successfully clicked next {navigation_type} button")
 
                 # Wait for page transition with better error handling
                 try:
@@ -264,11 +269,11 @@ class ReservationChecker:
                     # Continue anyway as the page might have loaded
 
             except Exception as e:
-                logger.info(f"Error with next button or reached end: {e}")
+                logger.info(f"Error with next {navigation_type} button or reached end: {e}")
                 break
 
         # Final summary
-        logger.info(f"📊 SUMMARY: Checked {week_count} weeks, found {len(all_available_slots)} total available slots")
+        logger.info(f"📊 SUMMARY: Checked {period_count} {navigation_type}s, found {len(all_available_slots)} total available slots")
 
         if all_available_slots:
             # Show details of found slots grouped by facility
@@ -285,13 +290,21 @@ class ReservationChecker:
                 for slot in slots:
                     logger.info(f"      📅 {slot['date']} - {slot['applicant_type']}")
         else:
-            logger.info("😔 No available slots found in any week")
+            logger.info(f"😔 No available slots found in any {navigation_type}")
 
-        # Additional check: if we found no slots and reached max weeks, log it
-        if week_count >= max_weeks:
-            logger.warning(f"⚠️ Reached maximum week limit ({max_weeks}). This might indicate an issue or no more dates available.")
+        # Additional check: if we found no slots and reached max periods, log it
+        if period_count >= max_periods:
+            logger.warning(f"⚠️ Reached maximum {navigation_type} limit ({max_periods}). This might indicate an issue or no more dates available.")
 
         return all_available_slots
+
+    async def check_all_weeks(self, page: Page) -> List[Dict]:
+        """Check all available weeks for reservations."""
+        return await self._check_periods(page, "week", max_periods=20)
+
+    async def check_all_months(self, page: Page) -> List[Dict]:
+        """Check all available months for reservations."""
+        return await self._check_periods(page, "month", max_periods=20)
 
     async def is_end_of_available_dates(self, page: Page) -> bool:
         """Check if we've reached the end of available dates by examining page content."""
@@ -326,7 +339,7 @@ class ReservationChecker:
             logger.warning(f"Error checking for end of dates: {e}")
             return False
 
-    async def run_check(self, send_notifications=True):
+    async def run_check(self, send_notifications=True, use_month_navigation=False):
         """Main method to run the reservation check."""
         logger.info("Starting reservation check...")
 
@@ -384,7 +397,10 @@ class ReservationChecker:
                     logger.error(f"❌ Navigation failed: {nav_error}")
                     raise
 
-                available_slots = await self.check_all_weeks(page)
+                if use_month_navigation:
+                    available_slots = await self.check_all_months(page)
+                else:
+                    available_slots = await self.check_all_weeks(page)
                 await browser.close()
 
                 if available_slots:

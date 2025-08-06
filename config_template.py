@@ -46,3 +46,6 @@ LOG_FILE = "reservation_checker.log"
 # Browser Configuration
 HEADLESS = True  # Set to False for debugging
 TIMEOUT = 30000  # 30 seconds timeout
+
+# Navigation Configuration
+USE_MONTH_NAVIGATION = False  # Set to True to use "1か月後" button, False to use "2週後" button (default)
