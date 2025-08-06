@@ -251,13 +251,19 @@ The bot will automatically notify you when slots become available.
         """Handle /check command"""
         user_id = update.effective_user.id
         user_name = update.effective_user.first_name or "User"
-        # Parse arguments for force option
+        
+        # Parse arguments for force option and filtering
         force_check = False
+        show_all = False
         if context.args:
             args_lower = [arg.lower() for arg in context.args]
             if "force" in args_lower or "-f" in args_lower:
                 force_check = True
-        logger.info(f"User {user_name} ({user_id}) issued /check command. force={force_check}")
+            if "all" in args_lower or "-a" in args_lower:
+                show_all = True
+        
+        logger.info(f"User {user_name} ({user_id}) issued /check command. force={force_check}, show_all={show_all}")
+        
         # Always send the "checking" message first
         await update.message.reply_text(f"🔍 Checking for available slots...\n\nPlease wait, this may take up to 30 seconds.")
         await asyncio.sleep(0)
@@ -287,19 +293,25 @@ The bot will automatically notify you when slots become available.
 
         # Otherwise, start a background task for the check
         logger.info(f"User {user_name} ({user_id}) starting background check task.")
-        self.application.create_task(self._background_check_task(context))
+        self.application.create_task(self._background_check_task(context, use_month_navigation=False, show_all=show_all))
 
     async def check_month_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /check_month command - check using month navigation"""
         user_id = update.effective_user.id
         user_name = update.effective_user.first_name or "User"
-        # Parse arguments for force option
+        
+        # Parse arguments for force option and filtering
         force_check = False
+        show_all = False
         if context.args:
             args_lower = [arg.lower() for arg in context.args]
             if "force" in args_lower or "-f" in args_lower:
                 force_check = True
-        logger.info(f"User {user_name} ({user_id}) issued /check_month command. force={force_check}")
+            if "all" in args_lower or "-a" in args_lower:
+                show_all = True
+        
+        logger.info(f"User {user_name} ({user_id}) issued /check_month command. force={force_check}, show_all={show_all}")
+        
         # Always send the "checking" message first
         await update.message.reply_text(f"🔍 Checking for available slots using month navigation...\n\nPlease wait, this may take up to 30 seconds.")
         await asyncio.sleep(0)
@@ -329,14 +341,14 @@ The bot will automatically notify you when slots become available.
 
         # Otherwise, start a background task for the check with month navigation
         logger.info(f"User {user_name} ({user_id}) starting background check task with month navigation.")
-        self.application.create_task(self._background_check_task(context, use_month_navigation=True))
+        self.application.create_task(self._background_check_task(context, use_month_navigation=True, show_all=show_all))
 
-    async def _background_check_task(self, context: ContextTypes.DEFAULT_TYPE, use_month_navigation=False):
+    async def _background_check_task(self, context: ContextTypes.DEFAULT_TYPE, use_month_navigation=False, show_all=False):
         async with self.check_lock:
             try:
                 logger.info(f"Background check task started. Notifying {len(self.waiting_users)} users.")
                 # Run the reservation check with optional month navigation
-                result = await self.reservation_checker.run_check(send_notifications=False, use_month_navigation=use_month_navigation)
+                result = await self.reservation_checker.run_check(send_notifications=False, use_month_navigation=use_month_navigation, show_all=show_all)
                 self.update_cache(result)
                 # Send result to all waiting users in parallel
                 async def send_result(user_id, chat_id):
@@ -388,6 +400,19 @@ The bot will automatically notify you when slots become available.
 /cache - Show detailed cache information
 /help - Show this help message
 
+<b>Command Parameters:</b>
+• <b>/check</b> - Check with 2-week navigation (shows only relevant slots by default)
+• <b>/check all</b> - Check with 2-week navigation (shows ALL available slots)
+• <b>/check force</b> - Force fresh check (ignore cache)
+• <b>/check_month</b> - Check with 1-month navigation (shows only relevant slots by default)
+• <b>/check_month all</b> - Check with 1-month navigation (shows ALL available slots)
+• <b>/check_month force</b> - Force fresh check (ignore cache)
+
+<b>Filtering Options:</b>
+• <b>Default behavior</b> - Shows only slots for "住民票のある方" (relevant applicants)
+• <b>all parameter</b> - Shows ALL available slots (both applicant types)
+• <b>force parameter</b> - Ignores cache and performs fresh check
+
 <b>Features:</b>
 • <b>Automatic slot monitoring</b> - Checks every {CHECK_INTERVAL} seconds
 • Instant notifications when slots become available
@@ -415,6 +440,12 @@ The bot will automatically notify you when slots become available.
 <b>Navigation options:</b>
 • <b>/check</b> - Uses "2週後" (2 weeks later) button for navigation
 • <b>/check_month</b> - Uses "1か月後" (1 month later) button for navigation
+
+<b>Examples:</b>
+• <code>/check</code> - Check with default filtering (relevant slots only)
+• <code>/check all</code> - Check showing all available slots
+• <code>/check force</code> - Force fresh check with default filtering
+• <code>/check_month all force</code> - Force fresh check showing all slots with month navigation
         """
         
         await update.message.reply_text(help_message, parse_mode='HTML')

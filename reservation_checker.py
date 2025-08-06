@@ -19,7 +19,8 @@ try:
         TARGET_FACILITIES,
         HEADLESS,
         TIMEOUT,
-        USE_MONTH_NAVIGATION
+        USE_MONTH_NAVIGATION,
+        SHOW_ONLY_RELEVANT_APPLICANTS
     )
 except ImportError:
     from config_template import (
@@ -28,7 +29,8 @@ except ImportError:
         TARGET_FACILITIES,
         HEADLESS,
         TIMEOUT,
-        USE_MONTH_NAVIGATION
+        USE_MONTH_NAVIGATION,
+        SHOW_ONLY_RELEVANT_APPLICANTS
     )
 
 # Configure logging
@@ -138,12 +140,23 @@ class ReservationChecker:
             else:
                 logger.info("📅 Date range: Unable to determine")
 
-            # Find all rows for target facilities
+            # First, get the date headers from the second row
+            date_headers = []
             rows = await page.query_selector_all('tr')
+            if len(rows) > 1:
+                date_row = rows[1]  # The row with dates
+                date_header_cells = await date_row.query_selector_all('td')
+                for cell in date_header_cells:
+                    date_text = await cell.text_content()
+                    if date_text and date_text.strip():
+                        clean_date = ' '.join(date_text.strip().split())
+                        if clean_date and len(clean_date) > 2:
+                            date_headers.append(clean_date)
 
+            # Find all rows for target facilities
             for row in rows:
-                # Get the facility name from the first cell
-                facility_cell = await row.query_selector('td:first-child')
+                # Get the facility name from the first cell (could be th or td)
+                facility_cell = await row.query_selector('th:first-child, td:first-child')
                 if not facility_cell:
                     continue
 
@@ -161,25 +174,40 @@ class ReservationChecker:
                 if not target_facility:
                     continue
 
-                # Get applicant type from second cell
-                applicant_cell = await row.query_selector('td:nth-child(2)')
+                # Get applicant type from second cell (could be th or td)
+                applicant_cell = await row.query_selector('th:nth-child(2), td:nth-child(2)')
                 if not applicant_cell:
                     continue
 
                 applicant_type = await applicant_cell.text_content()
                 applicant_type = applicant_type.strip() if applicant_type else "Unknown"
 
-                # Check all date cells for availability
+                # Check all date cells for availability (exclude first two cells)
                 date_cells = await row.query_selector_all('td:not(:first-child):not(:nth-child(2))')
 
                 for i, cell in enumerate(date_cells):
-                    # Get the date from the header
-                    date_header = await page.query_selector(f'th:nth-child({i + 3})')
-                    if not date_header:
-                        continue
-
-                    date_text = await date_header.text_content()
-                    date_text = date_text.strip() if date_text else ""
+                    # Use the date from our pre-collected headers, but handle overflow
+                    if i < len(date_headers):
+                        date_text = date_headers[i]
+                    else:
+                        # If we have more cells than headers, try to extract date from the cell itself
+                        # Look for sr-only text that might contain the date
+                        sr_only = await cell.query_selector('.sr-only')
+                        if sr_only:
+                            sr_text = await sr_only.text_content()
+                            if sr_text and '年' in sr_text and '月' in sr_text and '日' in sr_text:
+                                # Extract date from sr-only text (e.g., "2025年08月21日")
+                                import re
+                                date_match = re.search(r'(\d{4})年(\d{2})月(\d{2})日', sr_text)
+                                if date_match:
+                                    year, month, day = date_match.groups()
+                                    date_text = f"{month}/{day}"
+                                else:
+                                    date_text = f"Unknown date {i + 1}"
+                            else:
+                                date_text = f"Unknown date {i + 1}"
+                        else:
+                            date_text = f"Unknown date {i + 1}"
 
                     # Check for available slot
                     svg = await cell.query_selector('svg')
@@ -339,7 +367,7 @@ class ReservationChecker:
             logger.warning(f"Error checking for end of dates: {e}")
             return False
 
-    async def run_check(self, send_notifications=True, use_month_navigation=False):
+    async def run_check(self, send_notifications=True, use_month_navigation=False, show_all=False):
         """Main method to run the reservation check."""
         logger.info("Starting reservation check...")
 
@@ -404,7 +432,9 @@ class ReservationChecker:
                 await browser.close()
 
                 if available_slots:
-                    result_message = await self.process_available_slots(available_slots, send_notifications)
+                    # Use show_all parameter to override default filtering
+                    filter_applicants = not show_all  # If show_all=True, don't filter
+                    result_message = await self.process_available_slots(available_slots, send_notifications, filter_applicants=filter_applicants)
                     # Only notify subscribers if this is a scheduled/cron run
                     if send_notifications:
                         await self.send_telegram_message(result_message)
@@ -427,10 +457,23 @@ class ReservationChecker:
             logger.error(f"Error during reservation check: {e}")
             return error_msg
 
-    async def process_available_slots(self, slots: List[Dict], send_notifications=True):
+    async def process_available_slots(self, slots: List[Dict], send_notifications=True, filter_applicants=None):
         """Format available slots for notification or user display."""
         if not slots:
             return ""
+
+        # Use configuration default if filter_applicants not specified
+        if filter_applicants is None:
+            filter_applicants = SHOW_ONLY_RELEVANT_APPLICANTS
+
+        # Filter slots if requested
+        if filter_applicants:
+            original_count = len(slots)
+            filtered_slots = [slot for slot in slots if "住民票のある方" in slot['applicant_type']]
+            if not filtered_slots:
+                return "❌ No relevant slots found (only showing 住民票のある方)"
+            slots = filtered_slots
+            logger.info(f"🔍 Filtered results: {original_count} total slots → {len(slots)} relevant slots")
 
         slots_by_date_facility = {}
         for slot in slots:

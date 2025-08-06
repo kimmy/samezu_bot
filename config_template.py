@@ -36,6 +36,11 @@ TARGET_URL = "https://www.keishicho-gto.metro.tokyo.lg.jp/keishicho-u/reserve/of
 # Target facilities to check
 TARGET_FACILITIES = ["府中試験場", "鮫洲試験場"]
 
+# Filtering Configuration
+# Set to True to show only slots for "住民票のある方" (relevant applicants)
+# Set to False to show all available slots
+SHOW_ONLY_RELEVANT_APPLICANTS = True
+
 # Check interval in seconds
 CHECK_INTERVAL = 300  # 5 minutes
 
