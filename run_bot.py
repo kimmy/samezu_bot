@@ -14,9 +14,9 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from reservation_checker import ReservationChecker
 # Try to import from config first (for local), fallback to config_template (for Railway)
 try:
-    from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USERS, CHECK_INTERVAL
+    from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USERS, CHECK_INTERVAL, TARGET_URL
 except ImportError:
-    from config_template import TELEGRAM_BOT_TOKEN, TELEGRAM_USERS, CHECK_INTERVAL
+    from config_template import TELEGRAM_BOT_TOKEN, TELEGRAM_USERS, CHECK_INTERVAL, TARGET_URL
 
 # Set up logging
 logging.basicConfig(
@@ -205,6 +205,7 @@ class SamezuBot:
         self.application.add_handler(CommandHandler("cache", self.cache_command))
         self.application.add_handler(CommandHandler("subscribe", self.subscribe_command))
         self.application.add_handler(CommandHandler("unsubscribe", self.unsubscribe_command))
+        self.application.add_handler(CommandHandler("link", self.link_command))
     
     def is_cache_valid(self):
         """Check if the cached result is still valid (within 2 minutes)."""
@@ -235,6 +236,7 @@ This bot helps you check for available driving test reservation slots.
 
 <b>Available commands:</b>
 /check - Check for available slots
+/link - Get the reservation system website
 /cache - Show cache information
 /help - Show this help message
 
@@ -336,6 +338,7 @@ The bot will automatically notify you when slots become available.
 <b>Commands:</b>
 /start - Welcome message
 /check - Manually check for available slots
+/link - Get the reservation system website
 /status - Check bot status
 /cache - Show detailed cache information
 /help - Show this help message
@@ -344,6 +347,7 @@ The bot will automatically notify you when slots become available.
 • <b>Automatic slot monitoring</b> - Checks every {CHECK_INTERVAL} seconds
 • Instant notifications when slots become available
 • Manual slot checking with /check command
+• Direct website access with /link command
 • Concurrent checking - multiple users can check simultaneously
 • Smart caching - results cached for 2 minutes to avoid repeated scraping
 
@@ -425,6 +429,20 @@ The bot will automatically notify you when slots become available.
             message += "💡 <b>Note:</b> Cache has expired. Next /check will fetch fresh data."
         
         await update.message.reply_text(message, parse_mode='HTML')
+
+    async def link_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /link command - send the reservation system website URL"""
+        link_message = f"""
+🔗 <b>Reservation System Website</b>
+
+📋 <b>Tokyo Police Department Driving Test Reservation System</b>
+
+🌐 <b>Website:</b> {TARGET_URL}
+
+💡 <b>Note:</b> You can visit this website directly to check for available slots manually.
+        """
+        
+        await update.message.reply_text(link_message, parse_mode='HTML')
 
 class BotRunner:
     def __init__(self):
