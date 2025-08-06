@@ -216,7 +216,7 @@ class SamezuBot:
             )
 
     async def subscribe_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /subscribe command."""
+        """Handle /subscribe command with slot type selection."""
         chat_id = update.effective_chat.id
         user = update.effective_user
 
@@ -231,6 +231,19 @@ class SamezuBot:
         else:
             user_info = f"User{chat_id}"
 
+        # Parse subscription type from arguments
+        subscription_type = "relevant"  # Default to relevant slots only
+        if context.args:
+            arg = context.args[0].lower()
+            if arg in ["all", "すべて", "全て"]:
+                subscription_type = "all"
+            elif arg in ["relevant", "関連", "relevant_only"]:
+                subscription_type = "relevant"
+            elif arg in ["nai", "ない方", "nai_only"]:
+                subscription_type = "nai"
+            elif arg in ["ari", "ある方", "ari_only"]:
+                subscription_type = "ari"
+
         subscribers = self.get_subscribers()
         existing_ids = [sub[0] for sub in subscribers]
 
@@ -240,12 +253,21 @@ class SamezuBot:
                 parse_mode='HTML'
             )
         else:
-            self.add_subscriber(chat_id, user_info)
-            await update.message.reply_text(
-                f"✅ You are now subscribed! You will receive notifications when slots are found.\n\n"
-                f"👤 You'll be tagged as: {user_info}",
-                parse_mode='HTML'
-            )
+            # Store subscription type with user info
+            user_info_with_type = f"{user_info}|{subscription_type}"
+            self.add_subscriber(chat_id, user_info_with_type)
+
+            # Create response message based on subscription type
+            if subscription_type == "all":
+                response = f"✅ You are now subscribed to <b>ALL</b> slot notifications!\n\n👤 You'll be tagged as: {user_info}\n📋 You'll receive notifications for both 住民票のある方 and 住民票のない方 slots."
+            elif subscription_type == "nai":
+                response = f"✅ You are now subscribed to <b>住民票のない方</b> slot notifications!\n\n👤 You'll be tagged as: {user_info}\n📋 You'll receive notifications for 住民票のない方 slots only."
+            elif subscription_type == "ari":
+                response = f"✅ You are now subscribed to <b>住民票のある方</b> slot notifications!\n\n👤 You'll be tagged as: {user_info}\n📋 You'll receive notifications for 住民票のある方 slots only."
+            else:  # relevant
+                response = f"✅ You are now subscribed to <b>relevant</b> slot notifications!\n\n👤 You'll be tagged as: {user_info}\n📋 You'll receive notifications for 住民票のある方 slots only (filtered)."
+
+            await update.message.reply_text(response, parse_mode='HTML')
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
@@ -400,6 +422,13 @@ The bot will automatically notify you when slots become available.
 /cache - Show detailed cache information
 /help - Show this help message
 
+<b>Subscription Options:</b>
+• <b>/subscribe</b> - Subscribe to relevant slots only (住民票のある方)
+• <b>/subscribe all</b> - Subscribe to ALL available slots (both types)
+• <b>/subscribe nai</b> - Subscribe to 住民票のない方 slots only
+• <b>/subscribe ari</b> - Subscribe to 住民票のある方 slots only
+• <b>/unsubscribe</b> - Unsubscribe from notifications
+
 <b>Command Parameters:</b>
 • <b>/check</b> - Check with 2-week navigation (shows only relevant slots by default)
 • <b>/check all</b> - Check with 2-week navigation (shows ALL available slots)
@@ -421,6 +450,7 @@ The bot will automatically notify you when slots become available.
 • Direct website access with /link command
 • Concurrent checking - multiple users can check simultaneously
 • Smart caching - results cached for {CACHE_DURATION} seconds to avoid repeated scraping
+• <b>Selective subscriptions</b> - Choose what type of slots to be notified about
 
 <b>Supported facilities:</b>
 • 府中試験場 (Fuchu Test Center)
@@ -446,6 +476,8 @@ The bot will automatically notify you when slots become available.
 • <code>/check all</code> - Check showing all available slots
 • <code>/check force</code> - Force fresh check with default filtering
 • <code>/check_month all force</code> - Force fresh check showing all slots with month navigation
+• <code>/subscribe all</code> - Subscribe to notifications for all slot types
+• <code>/subscribe nai</code> - Subscribe to notifications for 住民票のない方 slots only
         """
 
         await update.message.reply_text(help_message, parse_mode='HTML')
@@ -594,36 +626,141 @@ The bot will automatically notify you when slots become available.
             return cached_result
 
     async def _send_notifications_to_subscribers(self, result_to_send):
-        """Send notifications to all subscribers."""
+        """Send notifications to all subscribers based on their subscription type."""
         subscribers = self.get_subscribers()
         if not subscribers:
             logger.warning("No subscribers to send notifications to.")
             return
 
         tasks = []
-        for chat_id, user_info in subscribers:
+        for chat_id, user_info_with_type in subscribers:
             try:
                 # Ensure the chat_id is an integer for send_message
                 chat_id = int(chat_id)
 
-                # Create notification message with user tag if available
-                if user_info and user_info != f"User{chat_id}":
-                    notification_message = f"🔔 @{user_info}\n\n{result_to_send}"
+                # Parse user info and subscription type
+                if '|' in user_info_with_type:
+                    user_info, subscription_type = user_info_with_type.split('|', 1)
                 else:
-                    notification_message = result_to_send
+                    user_info = user_info_with_type
+                    subscription_type = "relevant"  # Default for old subscribers
 
-                task = self.application.bot.send_message(
-                    chat_id=chat_id,
-                    text=notification_message,
-                    parse_mode='HTML'
-                )
-                tasks.append(task)
+                # Filter result based on subscription type
+                filtered_result = await self._filter_result_for_subscription(result_to_send, subscription_type)
+
+                # Only send notification if there are slots for this subscription type
+                if filtered_result and "❌ No" not in filtered_result:
+                    # Create notification message with user tag if available
+                    if user_info and user_info != f"User{chat_id}":
+                        notification_message = f"🔔 @{user_info}\n\n{filtered_result}"
+                    else:
+                        notification_message = filtered_result
+
+                    task = self.application.bot.send_message(
+                        chat_id=chat_id,
+                        text=notification_message,
+                        parse_mode='HTML'
+                    )
+                    tasks.append(task)
+                    logger.info(f"Sending {subscription_type} notification to subscriber {chat_id}")
+                else:
+                    logger.info(f"Skipping notification for subscriber {chat_id} - no {subscription_type} slots found")
+
             except Exception as e:
                 logger.error(f"Failed to send notification to subscriber {chat_id}: {e}")
 
         # Send all messages in parallel
-        await asyncio.gather(*tasks, return_exceptions=True)
-        logger.info(f"Sent notifications to {len(subscribers)} subscribers.")
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            logger.info(f"Sent notifications to {len(tasks)} subscribers.")
+        else:
+            logger.info("No notifications sent - no relevant slots for any subscribers.")
+
+    async def _filter_result_for_subscription(self, result, subscription_type):
+        """Filter result based on subscription type."""
+        if subscription_type == "all":
+            # Show all slots
+            return result
+        elif subscription_type == "nai":
+            # Show only 住民票のない方 slots
+            return await self._filter_for_nai_only(result)
+        elif subscription_type == "ari":
+            # Show only 住民票のある方 slots
+            return await self._apply_filtering_to_cached_result(result)
+        else:  # relevant (default)
+            # Show only 住民票のある方 slots (filtered)
+            return await self._apply_filtering_to_cached_result(result)
+
+    async def _filter_for_nai_only(self, result):
+        """Filter result to show only 住民票のない方 slots."""
+        try:
+            # If the result is already filtered or has no slots, return as is
+            if "❌ No slots" in result or "❌ Error" in result:
+                return result
+
+            # If the result doesn't contain slots for "住民票のない方", return no slots message
+            if "住民票のない方" not in result:
+                return "❌ No 住民票のない方 slots found"
+
+            # Parse the result to extract slots and filter them
+            lines = result.split('\n')
+            filtered_lines = []
+            in_slot_section = False
+            current_date = None
+            current_facility = None
+            has_relevant_slots = False
+
+            for line in lines:
+                # Keep header lines
+                if any(header in line for header in ["🎉 Available Reservation Slots Found!", "📍 Facilities:", "To book, click", "🔗 Book Now"]):
+                    filtered_lines.append(line)
+                    continue
+
+                # Keep date headers
+                if "📅 <b>" in line and "</b>" in line:
+                    current_date = line
+                    in_slot_section = True
+                    has_relevant_slots = False
+                    filtered_lines.append(line)
+                    continue
+
+                # Keep facility headers
+                if "🏢 <b>" in line and "</b>" in line:
+                    current_facility = line
+                    filtered_lines.append(line)
+                    continue
+
+                # Filter slot lines - only keep "住民票のない方"
+                if "• " in line and "住民票" in line:
+                    if "住民票のない方" in line:
+                        filtered_lines.append(line)
+                        has_relevant_slots = True
+                    # Skip "住民票のある方" lines
+                    continue
+
+                # Add empty line after facility if it had relevant slots
+                if line.strip() == "" and in_slot_section and has_relevant_slots:
+                    filtered_lines.append(line)
+                    in_slot_section = False
+                    continue
+
+                # Keep other lines
+                if not in_slot_section or has_relevant_slots:
+                    filtered_lines.append(line)
+
+            # Join the filtered lines
+            filtered_result = '\n'.join(filtered_lines)
+
+            # If no relevant slots found, return the "no relevant slots" message
+            if "住民票のない方" not in filtered_result:
+                return "❌ No 住民票のない方 slots found"
+
+            return filtered_result
+
+        except Exception as e:
+            logger.error(f"Error applying naibo filtering to result: {e}")
+            # If filtering fails, return the original result
+            return result
 
     # Utility methods
     def _parse_command_args(self, context_args):
