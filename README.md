@@ -10,6 +10,8 @@ A Python-based Telegram bot that automatically checks for available driving test
 - 🔒 **Secure**: Local configuration with sensitive data kept private
 - 🚀 **Easy Setup**: Simple installation and configuration process
 - ⏰ **Scheduled Checking**: Automatically checks every 5 minutes
+- 📅 **Multiple Navigation**: Supports both 2-week and 1-month navigation
+- 🏷️ **User Tagging**: Tags users in notifications for easy identification
 
 ## Requirements
 
@@ -46,28 +48,25 @@ A Python-based Telegram bot that automatically checks for available driving test
 
 ### Local Setup
 
-1. **Update config.py with your credentials:**
+1. **Copy the config template:**
+   ```bash
+   cp config_template.py config.py
+   ```
+
+2. **Update config.py with your credentials:**
    ```python
    # Telegram Bot Configuration
    TELEGRAM_BOT_TOKEN = "your_actual_bot_token_here"
    
-   # User configuration
-   TELEGRAM_USERS = {
-       "YOUR_CHAT_ID": {
-           "name": "Your Name",
-           "notify_no_slots": True,
-           "notify_slots": True,
-           "notify_errors": True
-       }
-   }
+   # Other settings are already configured in config_template.py
    ```
 
-2. **Get your Telegram Bot Token:**
+3. **Get your Telegram Bot Token:**
    - Message @BotFather on Telegram
    - Create a new bot: `/newbot`
    - Copy the token provided
 
-3. **Get your Chat ID:**
+4. **Get your Chat ID:**
    - Message your bot
    - Visit: `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
    - Look for your `chat_id` in the response
@@ -89,32 +88,40 @@ python run_bot.py
 Once the bot is running, you can use these commands in Telegram:
 
 - `/start` - Welcome message and bot status
-- `/check` - Manually check for available slots (uses cache if available)
+- `/check` - Manually check for available slots (2-week navigation)
+- `/check_month` - Manually check for available slots (1-month navigation)
 - `/check force` or `/check -f` - Force a fresh check, ignoring the cache
+- `/check all` or `/check -a` - Show all available slots (not just relevant ones)
 - `/status` - Check bot status and last check time
 - `/cache` - Show detailed cache information and timestamp
+- `/link` - Get the reservation system website
 - `/help` - Show available commands
+
+### Subscription Options
+
+The bot supports different subscription types:
+
+- `/subscribe` - Subscribe to relevant slots only (住民票のある方)
+- `/subscribe all` - Subscribe to ALL available slots (both types)
+- `/subscribe nai` - Subscribe to 住民票のない方 slots only
+- `/subscribe ari` - Subscribe to 住民票のある方 slots only
+- `/unsubscribe` - Unsubscribe from notifications
 
 ### Automatic Checking
 
 The bot automatically checks for slots every 5 minutes. You'll receive notifications when:
-- ✅ Slots become available
-- ❌ No slots are found (if enabled)
+- ✅ Slots become available (based on your subscription type)
 - ⚠️ Errors occur during checking
 
 ## Configuration Options
 
-### User Notification Preferences
-
-Each user can configure their notification preferences in `config.py`:
-
-- `notify_no_slots`: Receive "no slots" messages (default: true)
-- `notify_slots`: Receive detailed slot notifications (default: true)
-- `notify_errors`: Receive error notifications (default: true)
-
 ### Check Interval
 
 Modify `CHECK_INTERVAL` in `config.py` to change how often the bot checks for slots (default: 300 seconds = 5 minutes).
+
+### Cache Duration
+
+Modify `CACHE_DURATION` in `config.py` to change how long results are cached (default: 120 seconds = 2 minutes).
 
 ### Target Facilities
 
@@ -123,6 +130,18 @@ The bot checks these facilities by default:
 - 鮫洲試験場 (Samezu Test Center)
 
 You can modify `TARGET_FACILITIES` in `config.py` to add or remove facilities.
+
+### Filtering Configuration
+
+- `SHOW_ONLY_RELEVANT_APPLICANTS`: Set to `True` to show only slots for "住民票のある方" (default: True)
+- Set to `False` to show all available slots
+
+### Timeout Configuration
+
+- `TIMEOUT`: Main timeout for page operations (default: 30000ms = 30 seconds)
+- `LOADING_INDICATOR_TIMEOUT`: Timeout for loading indicators (default: 5000ms = 5 seconds)
+- `PAGE_TRANSITION_WAIT`: Wait time after page transitions (default: 3000ms = 3 seconds)
+- `DYNAMIC_CONTENT_WAIT`: Wait time for dynamic content (default: 2000ms = 2 seconds)
 
 ## Running Locally
 
@@ -165,7 +184,7 @@ The bot will continue running even if you lock your laptop, but it will stop if 
 
 ### Logs
 
-Check `bot.log` for detailed error messages and debugging information.
+Check `bot.log` and `reservation_checker.log` for detailed error messages and debugging information.
 
 ## Security
 
@@ -180,13 +199,19 @@ Check `bot.log` for detailed error messages and debugging information.
 samezu_bot/
 ├── run_bot.py              # Main bot script
 ├── reservation_checker.py   # Web scraping logic
+├── config_template.py       # Configuration template
 ├── config.py               # Local configuration (not in Git)
 ├── requirements.txt         # Python dependencies
 ├── README.md              # This file
 ├── .gitignore             # Git ignore rules
 ├── venv/                  # Virtual environment
 ├── bot.log                # Bot logs
-└── subscribers.txt        # User subscriptions
+├── reservation_checker.log # Scraper logs
+├── subscribers.txt        # User subscriptions
+└── tests/                 # Test suite
+    ├── test_commands.py   # Command tests
+    ├── test_bot.py       # Bot tests
+    └── test_async.py     # Async tests
 ```
 
 ## Built With

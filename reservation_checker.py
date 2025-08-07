@@ -11,25 +11,18 @@ from datetime import datetime
 from typing import List, Dict, Tuple
 from playwright.async_api import async_playwright, Page
 from telegram import Bot
-# Try to import from config first (for local), fallback to config_template (for Railway)
+# Import all template values as defaults
+from config_template import *
+
+# Try to override with config values if they exist
 try:
-    from config import (
-        TELEGRAM_BOT_TOKEN,
-        TARGET_URL,
-        TARGET_FACILITIES,
-        HEADLESS,
-        TIMEOUT,
-        SHOW_ONLY_RELEVANT_APPLICANTS
-    )
+    import config
+    # Override template values with config values (if they exist)
+    for var in dir(config):
+        if not var.startswith('_') and var.isupper():
+            globals()[var] = getattr(config, var)
 except ImportError:
-    from config_template import (
-        TELEGRAM_BOT_TOKEN,
-        TARGET_URL,
-        TARGET_FACILITIES,
-        HEADLESS,
-        TIMEOUT,
-        SHOW_ONLY_RELEVANT_APPLICANTS
-    )
+    pass  # Use template values only
 
 # Configure logging
 logging.basicConfig(
@@ -92,12 +85,12 @@ class ReservationChecker:
             # Wait for any loading indicators to disappear
             try:
                 await page.wait_for_selector('.loading, .spinner, [aria-busy="true"]',
-                                          state='hidden', timeout=5000)
+                                          state='hidden', timeout=LOADING_INDICATOR_TIMEOUT)
             except:
                 pass  # No loading indicators found, that's fine
 
             # Wait a bit more for dynamic content
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(DYNAMIC_CONTENT_WAIT)
 
             # Verify the page has loaded by checking for facility names
             facility_elements = await page.query_selector_all('td')
@@ -287,9 +280,9 @@ class ReservationChecker:
 
                 # Wait for page transition with better error handling
                 try:
-                    await page.wait_for_timeout(3000)  # Increased wait time
+                    await page.wait_for_timeout(PAGE_TRANSITION_WAIT)  # Configurable wait time
                     # Additional check to ensure page loaded
-                    await page.wait_for_selector('table', timeout=10000)
+                    await page.wait_for_selector('table', timeout=TIMEOUT)
                 except Exception as e:
                     logger.warning(f"Page transition timeout: {e}")
                     # Continue anyway as the page might have loaded

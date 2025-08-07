@@ -37,3 +37,8 @@ LOG_FILE = "reservation_checker.log"
 # Browser Configuration
 HEADLESS = True  # Set to False for debugging
 TIMEOUT = 30000  # 30 seconds timeout
+
+# Additional timeout configurations
+LOADING_INDICATOR_TIMEOUT = 5000  # 5 seconds for loading indicators
+PAGE_TRANSITION_WAIT = 3000  # 3 seconds wait after page transitions
+DYNAMIC_CONTENT_WAIT = 2000  # 2 seconds wait for dynamic content

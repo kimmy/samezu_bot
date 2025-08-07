@@ -14,17 +14,18 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from reservation_checker import ReservationChecker
 
-# Try to import from config first (for local), fallback to config_template (for Railway)
+# Import all template values as defaults
+from config_template import *
+
+# Try to override with config values if they exist
 try:
-    from config import (
-        TELEGRAM_BOT_TOKEN, CHECK_INTERVAL,
-        CACHE_DURATION, TARGET_URL
-    )
+    import config
+    # Override template values with config values (if they exist)
+    for var in dir(config):
+        if not var.startswith('_') and var.isupper():
+            globals()[var] = getattr(config, var)
 except ImportError:
-    from config_template import (
-        TELEGRAM_BOT_TOKEN, CHECK_INTERVAL,
-        CACHE_DURATION, TARGET_URL
-    )
+    pass  # Use template values only
 
 # Configure logging
 logging.basicConfig(
