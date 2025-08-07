@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from samezu_bot.run_bot import SamezuBot
+from run_bot import SamezuBot
 
 @pytest.mark.asyncio
 async def test_subscribe_command(monkeypatch):
@@ -19,6 +19,7 @@ async def test_subscribe_command(monkeypatch):
         message = DummyMessage()
     class DummyContext:
         DEFAULT_TYPE = None
+        args = []  # Add missing args attribute
     # Patch add_subscriber to track calls
     called = {}
     def fake_add_subscriber(chat_id, user_info=None):
