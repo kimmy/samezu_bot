@@ -142,9 +142,24 @@ class ReservationChecker:
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'html.parser')
 
-        title = soup.title.string.strip() if soup.title else ''
-        if 'Waiting Room' in title:
-            raise Exception("Cloudflare waiting room active — try again in a few minutes")
+        # Handle Cloudflare waiting room — wait and retry until through
+        import re, time
+        while True:
+            title = soup.title.string.strip() if soup.title else ''
+            if 'Waiting Room' not in title:
+                break
+
+            # Try to parse estimated wait time from page, e.g. "予想待機時間は 2 分です"
+            body_text = soup.get_text()
+            match = re.search(r'(\d+)\s*分', body_text)
+            wait_minutes = int(match.group(1)) if match else 1
+            wait_seconds = wait_minutes * 60
+            logger.info(f"Cloudflare waiting room active. Estimated wait: {wait_minutes} min. Retrying in {wait_seconds}s...")
+
+            time.sleep(wait_seconds)
+            resp = session.get(TARGET_URL, timeout=30)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, 'html.parser')
 
         logger.info(f"✅ Page loaded: {title}")
         form_data = self._get_form_data(soup)
