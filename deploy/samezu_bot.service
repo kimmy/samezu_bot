@@ -1,0 +1,15 @@
+[Unit]
+Description=Samezu Bot - Telegram reservation checker
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/samezu_bot
+Environment="TELEGRAM_BOT_TOKEN=YOUR_TOKEN_HERE"
+ExecStart=/home/ubuntu/samezu_bot/venv/bin/python run_bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

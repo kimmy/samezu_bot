@@ -77,29 +77,43 @@ class ReservationChecker:
                 logger.error(f"Failed to send Telegram message to subscriber {chat_id}: {e}")
 
     async def wait_for_page_load(self, page: Page):
-        """Wait for the page to load completely."""
-        try:
-            # Wait for the table to be present
-            await page.wait_for_selector('table', timeout=TIMEOUT)
+        """Wait for the page to load completely, handling Cloudflare waiting room."""
+        # Wait up to 3 minutes total for Cloudflare waiting room to pass
+        max_wait = 180000
+        poll_interval = 5000
 
-            # Wait for any loading indicators to disappear
+        elapsed = 0
+        while elapsed < max_wait:
+            title = await page.title()
+            if 'Waiting Room' in title:
+                logger.info(f"Cloudflare waiting room detected, waiting... ({elapsed // 1000}s elapsed)")
+                await page.wait_for_timeout(poll_interval)
+                elapsed += poll_interval
+                continue
+
+            # We're past the waiting room — wait for the actual table
             try:
-                await page.wait_for_selector('.loading, .spinner, [aria-busy="true"]',
-                                          state='hidden', timeout=LOADING_INDICATOR_TIMEOUT)
-            except:
-                pass  # No loading indicators found, that's fine
+                await page.wait_for_selector('table', timeout=TIMEOUT)
 
-            # Wait a bit more for dynamic content
-            await page.wait_for_timeout(DYNAMIC_CONTENT_WAIT)
+                # Wait for any loading indicators to disappear
+                try:
+                    await page.wait_for_selector('.loading, .spinner, [aria-busy="true"]',
+                                              state='hidden', timeout=LOADING_INDICATOR_TIMEOUT)
+                except:
+                    pass
 
-            # Verify the page has loaded by checking for facility names
-            facility_elements = await page.query_selector_all('td')
-            if not facility_elements:
-                raise Exception("No table data found on page")
+                await page.wait_for_timeout(DYNAMIC_CONTENT_WAIT)
 
-        except Exception as e:
-            logger.error(f"Timeout waiting for page load: {e}")
-            raise
+                facility_elements = await page.query_selector_all('td')
+                if not facility_elements:
+                    raise Exception("No table data found on page")
+                return
+
+            except Exception as e:
+                logger.error(f"Timeout waiting for page load: {e}")
+                raise
+
+        raise Exception("Timed out waiting for Cloudflare waiting room to pass (3 minutes)")
 
     async def get_available_dates(self, page: Page) -> List[Dict]:
         """Extract available dates from the current page."""
