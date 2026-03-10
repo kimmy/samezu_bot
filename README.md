@@ -221,6 +221,10 @@ samezu_bot/
 - **python-telegram-bot** - Telegram bot API integration
 - **asyncio** - Asynchronous programming
 
+## Development
+
+This project was **vibe coded** using **Cursor** with AI assistance, demonstrating modern development practices and robust error handling.
+
 ## License
 
 This project is for personal use only.
