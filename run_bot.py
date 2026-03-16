@@ -180,10 +180,9 @@ class SamezuBot:
                 # Apply filtering to check if there are relevant slots
                 filtered_result = await self._apply_filtering_to_cached_result(result)
 
-                # Only send notifications if there are actual relevant slots
-                if "❌ No relevant slots found" not in filtered_result and "❌ No slots" not in filtered_result:
+                # Only send notifications if there are actual available slots
+                if "🎉" in filtered_result:
                     logger.info("🎉 Found relevant slots! Sending notifications to subscribers...")
-                    # Send notifications to subscribers with the filtered result
                     await self._send_notifications_to_subscribers(filtered_result)
                 else:
                     logger.info("📭 No relevant slots found, skipping notifications")
