@@ -652,7 +652,8 @@ The bot will automatically notify you when slots become available.
                 if filtered_result and "❌ No" not in filtered_result:
                     # Create notification message with user tag if available
                     if user_info and user_info != f"User{chat_id}":
-                        notification_message = f"🔔 @{user_info}\n\n{filtered_result}"
+                        tag = user_info if user_info.startswith('@') else f"@{user_info}"
+                        notification_message = f"🔔 {tag}\n\n{filtered_result}"
                     else:
                         notification_message = filtered_result
 

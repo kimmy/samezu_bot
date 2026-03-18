@@ -2,6 +2,7 @@
 config.py
 .env
 *.log
+subscribers.txt
 
 # Python
 __pycache__/
