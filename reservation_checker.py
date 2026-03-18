@@ -5,6 +5,7 @@ Checks for available reservation slots using requests + BeautifulSoup.
 Lightweight alternative to the Playwright version - no browser required.
 """
 
+import asyncio
 import logging
 from typing import List, Dict
 import requests
@@ -143,7 +144,7 @@ class ReservationChecker:
         soup = BeautifulSoup(resp.text, 'html.parser')
 
         # Handle Cloudflare waiting room — wait and retry until through
-        import re, time
+        import re
         while True:
             title = soup.title.string.strip() if soup.title else ''
             if 'Waiting Room' not in title:
@@ -156,7 +157,7 @@ class ReservationChecker:
             wait_seconds = wait_minutes * 60
             logger.info(f"Cloudflare waiting room active. Estimated wait: {wait_minutes} min. Retrying in {wait_seconds}s...")
 
-            time.sleep(wait_seconds)
+            await asyncio.sleep(wait_seconds)
             resp = session.get(TARGET_URL, timeout=30)
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, 'html.parser')
