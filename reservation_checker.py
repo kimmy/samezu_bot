@@ -242,7 +242,7 @@ class ReservationChecker:
             if use_month_navigation:
                 slots = await self._check_periods(
                     session,
-                    move_param='nextMonth',
+                    move_param='oneMonthLater',
                     nav_button_value='1か月後＞',
                 )
             else:
