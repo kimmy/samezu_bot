@@ -12,7 +12,7 @@ import time
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from reservation_checker import ReservationChecker
+from reservation_checker_playwright import ReservationChecker
 
 # Import all template values as defaults
 from config_template import *
