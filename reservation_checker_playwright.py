@@ -84,7 +84,13 @@ class ReservationChecker:
 
         elapsed = 0
         while elapsed < max_wait:
-            title = await page.title()
+            try:
+                title = await page.title()
+            except Exception:
+                # Page navigated mid-call (e.g. Cloudflare redirect) — retry
+                await page.wait_for_timeout(1000)
+                elapsed += 1000
+                continue
             if 'Waiting Room' in title:
                 logger.info(f"Cloudflare waiting room detected, waiting... ({elapsed // 1000}s elapsed)")
                 await page.wait_for_timeout(poll_interval)
