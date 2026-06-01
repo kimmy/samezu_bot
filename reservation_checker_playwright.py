@@ -36,9 +36,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class ReservationChecker:
-    def __init__(self):
+    def __init__(self, target_url=None, target_facilities=None, target_slot_types=None, source_name="tokyo"):
         self.bot = Bot(token=TELEGRAM_BOT_TOKEN)
         self.available_slots = []
+        self.target_url = target_url or TARGET_URL
+        self.target_facilities = target_facilities or TARGET_FACILITIES
+        self.target_slot_types = target_slot_types or TARGET_SLOT_TYPES
+        self.source_name = source_name
 
     async def send_telegram_message(self, message: str):
         """Send message to all subscribed users (only for slot notifications)."""
@@ -177,7 +181,7 @@ class ReservationChecker:
 
                 # Check if this row is for any of our target facilities
                 target_facility = None
-                for facility in TARGET_FACILITIES:
+                for facility in self.target_facilities:
                     if facility in facility_text:
                         target_facility = facility
                         break
@@ -415,10 +419,10 @@ class ReservationChecker:
                 })
                 logger.info("✅ User agent set")
 
-                logger.info(f"🔍 Navigating to: {TARGET_URL}")
+                logger.info(f"🔍 Navigating to: {self.target_url}")
                 try:
                     start_time = time.time()
-                    await page.goto(TARGET_URL, timeout=TIMEOUT)
+                    await page.goto(self.target_url, timeout=TIMEOUT)
                     nav_time = time.time() - start_time
                     logger.info(f"✅ Page navigation successful in {nav_time:.2f} seconds")
 
@@ -429,8 +433,8 @@ class ReservationChecker:
                     logger.info(f"🔗 Current URL: {current_url}")
 
                     # Check if we got redirected
-                    if current_url != TARGET_URL:
-                        logger.warning(f"⚠️ Redirected from {TARGET_URL} to {current_url}")
+                    if current_url != self.target_url:
+                        logger.warning(f"⚠️ Redirected from {self.target_url} to {current_url}")
 
                 except Exception as nav_error:
                     logger.error(f"❌ Navigation failed: {nav_error}")
@@ -480,9 +484,12 @@ class ReservationChecker:
         # Filter slots if requested
         if filter_applicants:
             original_count = len(slots)
-            filtered_slots = [slot for slot in slots if "住民票のある方" in slot['applicant_type']]
+            if self.target_slot_types:
+                filtered_slots = [slot for slot in slots if any(t in slot['applicant_type'] for t in self.target_slot_types)]
+            else:
+                filtered_slots = slots
             if not filtered_slots:
-                return "❌ No relevant slots found (only showing 住民票のある方)"
+                return f"❌ No relevant slots found (only showing {', '.join(self.target_slot_types)})"
             slots = filtered_slots
             logger.info(f"🔍 Filtered results: {original_count} total slots → {len(slots)} relevant slots")
 
@@ -491,7 +498,7 @@ class ReservationChecker:
             date = slot['date']
             facility = slot['facility']
             applicant_type = slot['applicant_type']
-            link = slot.get('link', TARGET_URL)
+            link = slot.get('link', self.target_url)
             if date not in slots_by_date_facility:
                 slots_by_date_facility[date] = {}
             if facility not in slots_by_date_facility[date]:
@@ -503,7 +510,7 @@ class ReservationChecker:
 
         # Create message
         message = "🎉 <b>Available Reservation Slots Found!</b>\n\n"
-        message += f"📍 <b>Facilities:</b> {', '.join(TARGET_FACILITIES)}\n\n"
+        message += f"📍 <b>Facilities:</b> {', '.join(self.target_facilities)}\n\n"
         message += "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
 
         for date, facilities in slots_by_date_facility.items():
@@ -517,7 +524,7 @@ class ReservationChecker:
             message += "\n"
 
         if not any(slot.get('link') for slot in slots):
-            message += f"🔗 <a href='{TARGET_URL}'>Book Now</a>"
+            message += f"🔗 <a href='{self.target_url}'>Book Now</a>"
 
         return message
 

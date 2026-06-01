@@ -36,10 +36,9 @@ async def test_check_command_cache_valid():
     bot = SamezuBot()
     update = DummyUpdate()
     context = DummyContext()
+    import time
     bot.cache['result'] = "Test result"
-    bot.cache['timestamp'] = asyncio.get_event_loop().time()
-    bot.is_cache_valid = lambda: True
-    bot.get_cache_age = lambda: 30
+    bot.cache['timestamp'] = time.time()
     await bot.check_command(update, context)
     assert "Using cached result" in update.message.last_text
 
@@ -50,7 +49,6 @@ async def test_check_command_cache_expired():
     context = DummyContext()
     bot.cache['result'] = None
     bot.cache['timestamp'] = None
-    bot.is_cache_valid = lambda: False
     bot.application = DummyApplication()
     bot.check_lock = asyncio.Lock()
     await bot.check_command(update, context)
@@ -62,9 +60,9 @@ async def test_check_command_force():
     update = DummyUpdate()
     context = DummyContext()
     context.args = ["force"]
+    import time
     bot.cache['result'] = "Test result"
-    bot.cache['timestamp'] = asyncio.get_event_loop().time()
-    bot.is_cache_valid = lambda: True
+    bot.cache['timestamp'] = time.time()
     bot.application = DummyApplication()
     bot.check_lock = asyncio.Lock()
     await bot.check_command(update, context)
@@ -75,10 +73,9 @@ async def test_check_month_command_cache_valid():
     bot = SamezuBot()
     update = DummyUpdate()
     context = DummyContext()
+    import time
     bot.cache['result'] = "Test result"
-    bot.cache['timestamp'] = asyncio.get_event_loop().time()
-    bot.is_cache_valid = lambda: True
-    bot.get_cache_age = lambda: 30
+    bot.cache['timestamp'] = time.time()
     await bot.check_month_command(update, context)
     assert "Using cached result" in update.message.last_text
 
@@ -89,7 +86,6 @@ async def test_check_month_command_cache_expired():
     context = DummyContext()
     bot.cache['result'] = None
     bot.cache['timestamp'] = None
-    bot.is_cache_valid = lambda: False
     bot.application = DummyApplication()
     bot.check_lock = asyncio.Lock()
     await bot.check_month_command(update, context)
@@ -101,9 +97,9 @@ async def test_check_month_command_force():
     update = DummyUpdate()
     context = DummyContext()
     context.args = ["force"]
+    import time
     bot.cache['result'] = "Test result"
-    bot.cache['timestamp'] = asyncio.get_event_loop().time()
-    bot.is_cache_valid = lambda: True
+    bot.cache['timestamp'] = time.time()
     bot.application = DummyApplication()
     bot.check_lock = asyncio.Lock()
     await bot.check_month_command(update, context)
@@ -148,7 +144,9 @@ async def test_link_command():
     update = DummyUpdate()
     context = DummyContext()
     await bot.link_command(update, context)
-    assert "Reservation System Website" in update.message.last_text
+    assert "Reservation Websites" in update.message.last_text
+    assert "Tokyo" in update.message.last_text
+    assert "Kanagawa" in update.message.last_text
 
 @pytest.mark.asyncio
 async def test_unsubscribe_command():

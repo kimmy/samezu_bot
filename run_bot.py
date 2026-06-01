@@ -58,8 +58,26 @@ class SamezuBot:
             'cache_duration': CACHE_DURATION
         }
 
-        # Initialize reservation checker
-        self.reservation_checker = ReservationChecker()
+        # Initialize reservation checkers
+        self.reservation_checker = ReservationChecker(
+            target_url=TARGET_URL,
+            target_facilities=TARGET_FACILITIES,
+            target_slot_types=TARGET_SLOT_TYPES,
+            source_name="tokyo",
+        )
+        self.kanagawa_checker = ReservationChecker(
+            target_url=KANAGAWA_TARGET_URL,
+            target_facilities=KANAGAWA_TARGET_FACILITIES,
+            target_slot_types=KANAGAWA_TARGET_SLOT_TYPES,
+            source_name="kanagawa",
+        )
+
+        # Per-source caches
+        self.kanagawa_cache = {
+            'result': None,
+            'timestamp': None,
+            'cache_duration': CACHE_DURATION
+        }
 
         # Register command handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
@@ -126,7 +144,7 @@ class SamezuBot:
             logger.error(f"Failed to remove subscriber: {e}")
 
     def get_subscribers(self):
-        """Return a list of subscriber info (chat_id, user_info)."""
+        """Return a list of (chat_id, raw_user_info) tuples from subscribers file."""
         try:
             with open(self.SUBSCRIBERS_FILE, 'r') as f:
                 subscribers = []
@@ -144,6 +162,31 @@ class SamezuBot:
         except Exception as e:
             logger.error(f"Failed to read subscribers: {e}")
             return []
+
+    def parse_subscriber_info(self, user_info_raw):
+        """Parse raw user_info string into (username, sources, subscription_type).
+
+        Formats supported:
+          @alice|samezu,kanagawa|relevant   (new 3-part)
+          @alice|relevant                   (old 2-part — sources defaults to all)
+          None / empty                      (legacy — all sources, relevant type)
+        """
+        if not user_info_raw:
+            return None, ["samezu", "fuchu", "kanagawa"], "relevant"
+
+        parts = user_info_raw.split('|')
+        if len(parts) >= 3:
+            username, sources_str, sub_type = parts[0], parts[1], parts[2]
+            sources = [s.strip() for s in sources_str.split(',') if s.strip()]
+        elif len(parts) == 2:
+            username, sub_type = parts[0], parts[1]
+            sources = ["samezu", "fuchu", "kanagawa"]  # backward compat
+        else:
+            username = parts[0]
+            sub_type = "relevant"
+            sources = ["samezu", "fuchu", "kanagawa"]
+
+        return username, sources, sub_type
 
     # Scheduler methods
     async def start_scheduler(self):
@@ -173,19 +216,16 @@ class SamezuBot:
                 await asyncio.sleep(CHECK_INTERVAL)
                 logger.info("🔄 Running scheduled check...")
 
-                # Run the reservation check with notifications disabled first
-                result = await self.reservation_checker.run_check(send_notifications=False, show_all=True)
-                self.update_cache(result)
-
-                # Apply filtering to check if there are relevant slots
-                filtered_result = await self._apply_filtering_to_cached_result(result)
-
-                # Only send notifications if there are actual available slots
-                if "🎉" in filtered_result:
-                    logger.info("🎉 Found relevant slots! Sending notifications to subscribers...")
-                    await self._send_notifications_to_subscribers(filtered_result)
-                else:
-                    logger.info("📭 No relevant slots found, skipping notifications")
+                await self._run_scheduled_check(
+                    checker=self.reservation_checker,
+                    cache=self.cache,
+                    source="tokyo",
+                )
+                await self._run_scheduled_check(
+                    checker=self.kanagawa_checker,
+                    cache=self.kanagawa_cache,
+                    source="kanagawa",
+                )
 
                 logger.info("✅ Scheduled check completed")
 
@@ -194,8 +234,20 @@ class SamezuBot:
                 break
             except Exception as e:
                 logger.error(f"❌ Error in scheduled check: {e}")
-                # Continue the loop even if there's an error
                 continue
+
+    async def _run_scheduled_check(self, checker, cache, source):
+        """Run one checker, update its cache, notify relevant subscribers."""
+        result = await checker.run_check(send_notifications=False, show_all=True)
+        cache['result'] = result
+        cache['timestamp'] = time.time()
+
+        filtered_result = await self._apply_filtering_to_cached_result(result)
+        if "🎉" in filtered_result:
+            logger.info(f"🎉 Found slots for {source}! Sending notifications...")
+            await self._send_notifications_to_subscribers(filtered_result, source=source)
+        else:
+            logger.info(f"📭 No relevant slots for {source}")
 
     async def unsubscribe_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /unsubscribe command."""
@@ -216,32 +268,49 @@ class SamezuBot:
             )
 
     async def subscribe_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /subscribe command with slot type selection."""
+        """Handle /subscribe command.
+
+        Usage: /subscribe [sources] [type]
+          sources: samezu, fuchu, kanagawa (space-separated; default = all three)
+          type:    all, ari, nai, relevant (default = relevant)
+
+        Examples:
+          /subscribe                    → all sources, relevant type
+          /subscribe kanagawa           → kanagawa only, relevant type
+          /subscribe samezu fuchu       → samezu + fuchu, relevant type
+          /subscribe kanagawa all       → kanagawa, all slot types
+        """
         chat_id = update.effective_chat.id
         user = update.effective_user
 
-        # Create user info for tagging
-        user_info = ""
         if user.username:
-            user_info = f"@{user.username}"
+            username = f"@{user.username}"
         elif user.first_name:
-            user_info = user.first_name
+            username = user.first_name
             if user.last_name:
-                user_info += f" {user.last_name}"
+                username += f" {user.last_name}"
         else:
-            user_info = f"User{chat_id}"
+            username = f"User{chat_id}"
 
-        # Parse subscription type from arguments
-        subscription_type = "relevant"  # Default to relevant slots only
-        if context.args:
-            arg = context.args[0].lower()
+        # Parse args into sources and type
+        source_keywords = {"samezu", "fuchu", "kanagawa"}
+        type_keywords = {"all", "relevant", "nai", "ari", "すべて", "全て", "ない方", "ある方"}
+
+        args_lower = [a.lower() for a in (context.args or [])]
+        sources = [a for a in args_lower if a in source_keywords]
+        type_args = [a for a in args_lower if a in type_keywords]
+
+        if not sources:
+            sources = ["samezu", "fuchu", "kanagawa"]
+
+        subscription_type = "relevant"
+        if type_args:
+            arg = type_args[0]
             if arg in ["all", "すべて", "全て"]:
                 subscription_type = "all"
-            elif arg in ["relevant", "関連", "relevant_only"]:
-                subscription_type = "relevant"
-            elif arg in ["nai", "ない方", "nai_only"]:
+            elif arg in ["nai", "ない方"]:
                 subscription_type = "nai"
-            elif arg in ["ari", "ある方", "ari_only"]:
+            elif arg in ["ari", "ある方"]:
                 subscription_type = "ari"
 
         subscribers = self.get_subscribers()
@@ -249,128 +318,120 @@ class SamezuBot:
 
         if str(chat_id) in existing_ids:
             await update.message.reply_text(
-                "ℹ️ You are already subscribed and will receive notifications when slots are found.",
+                "ℹ️ You are already subscribed. Use /unsubscribe first to change your subscription.",
                 parse_mode='HTML'
             )
-        else:
-            # Store subscription type with user info
-            user_info_with_type = f"{user_info}|{subscription_type}"
-            self.add_subscriber(chat_id, user_info_with_type)
+            return
 
-            # Create response message based on subscription type
-            if subscription_type == "all":
-                response = f"✅ You are now subscribed to <b>ALL</b> slot notifications!\n\n👤 You'll be tagged as: {user_info}\n📋 You'll receive notifications for both 住民票のある方 and 住民票のない方 slots."
-            elif subscription_type == "nai":
-                response = f"✅ You are now subscribed to <b>住民票のない方</b> slot notifications!\n\n👤 You'll be tagged as: {user_info}\n📋 You'll receive notifications for 住民票のない方 slots only."
-            elif subscription_type == "ari":
-                response = f"✅ You are now subscribed to <b>住民票のある方</b> slot notifications!\n\n👤 You'll be tagged as: {user_info}\n📋 You'll receive notifications for 住民票のある方 slots only."
-            else:  # relevant
-                response = f"✅ You are now subscribed to <b>relevant</b> slot notifications!\n\n👤 You'll be tagged as: {user_info}\n📋 You'll receive notifications for 住民票のある方 slots only (filtered)."
+        sources_str = ",".join(sources)
+        self.add_subscriber(chat_id, f"{username}|{sources_str}|{subscription_type}")
 
-            await update.message.reply_text(response, parse_mode='HTML')
+        sources_display = ", ".join(sources)
+        type_display = {
+            "all": "ALL slot types",
+            "nai": "住民票のない方 only",
+            "ari": "住民票のある方 only",
+            "relevant": "relevant slots (住民票のある方)",
+        }[subscription_type]
+
+        response = (
+            f"✅ Subscribed!\n\n"
+            f"👤 Tagged as: {username}\n"
+            f"📍 Sources: <b>{sources_display}</b>\n"
+            f"📋 Slot type: <b>{type_display}</b>"
+        )
+        await update.message.reply_text(response, parse_mode='HTML')
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
-        welcome_message = """
-🎉 <b>Welcome to Samezu Bot!</b>
-
-This bot helps you check for available driving test reservation slots.
-
-<b>Available commands:</b>
-/check - Check for available slots (2-week navigation)
-/check_month - Check for available slots (1-month navigation)
-/link - Get the reservation system website
-/cache - Show cache information
-/help - Show this help message
-
-The bot will automatically notify you when slots become available.
-        """
-
+        welcome_message = (
+            "🎉 <b>Welcome to Samezu Bot!</b>\n\n"
+            "This bot monitors driving test reservation slots for Tokyo (府中・鮫洲) and Kanagawa (外国免許四輪車).\n\n"
+            "<b>Available commands:</b>\n"
+            "/check - Check for available slots\n"
+            "/subscribe - Subscribe to notifications\n"
+            "/link - Get the reservation websites\n"
+            "/help - Show full help\n\n"
+            "The bot checks automatically and notifies you when slots open up."
+        )
         await update.message.reply_text(welcome_message, parse_mode='HTML')
 
     async def check_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /check command"""
+        """Handle /check command.
+
+        Usage: /check [source] [all] [force]
+          source: samezu, fuchu, kanagawa (default = tokyo, i.e. samezu+fuchu)
+        """
         user_id = update.effective_user.id
         user_name = update.effective_user.first_name or "User"
 
-        # Parse arguments for force option and filtering
-        force_check, show_all = self._parse_command_args(context.args)
+        force_check, show_all, source = self._parse_command_args(context.args)
 
-        logger.info(f"User {user_name} ({user_id}) issued /check command. force={force_check}, show_all={show_all}")
+        logger.info(f"User {user_name} ({user_id}) issued /check. force={force_check}, show_all={show_all}, source={source}")
 
-        # Always send the "checking" message first
-        await update.message.reply_text(f"🔍 Checking for available slots...\n\nPlease wait, this may take up to 30 seconds.")
+        await update.message.reply_text("🔍 Checking for available slots...\n\nPlease wait, this may take up to 30 seconds.")
         await asyncio.sleep(0)
 
-        # Check if we have a valid cache
-        if await self._handle_cached_result(update, user_name, user_id, force_check, show_all):
+        cache = self.kanagawa_cache if source == "kanagawa" else self.cache
+        if await self._handle_cached_result(update, user_name, user_id, force_check, show_all, cache=cache):
             return
 
-        # Add user to waiting set
         self.waiting_users.add((user_id, update.effective_chat.id))
 
-        # If a check is already running, just return (user will get result when ready)
         if self.check_lock.locked():
             logger.info(f"User {user_name} ({user_id}) queued for result.")
             return
 
-        # Otherwise, start a background task for the check
         logger.info(f"User {user_name} ({user_id}) starting background check task.")
-        asyncio.create_task(self._background_check_task(context, use_month_navigation=False, show_all=show_all))
+        asyncio.create_task(self._background_check_task(context, use_month_navigation=False, show_all=show_all, source=source))
 
     async def check_month_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /check_month command - check using month navigation"""
+        """Handle /check_month command - check using month navigation."""
         user_id = update.effective_user.id
         user_name = update.effective_user.first_name or "User"
 
-        # Parse arguments for force option and filtering
-        force_check, show_all = self._parse_command_args(context.args)
+        force_check, show_all, source = self._parse_command_args(context.args)
 
-        logger.info(f"User {user_name} ({user_id}) issued /check_month command. force={force_check}, show_all={show_all}")
+        logger.info(f"User {user_name} ({user_id}) issued /check_month. force={force_check}, show_all={show_all}, source={source}")
 
-        # Always send the "checking" message first
-        await update.message.reply_text(f"🔍 Checking for available slots using month navigation...\n\nPlease wait, this may take up to 30 seconds.")
+        await update.message.reply_text("🔍 Checking for available slots using month navigation...\n\nPlease wait, this may take up to 30 seconds.")
         await asyncio.sleep(0)
 
-        # Check if we have a valid cache
-        if await self._handle_cached_result(update, user_name, user_id, force_check, show_all):
+        cache = self.kanagawa_cache if source == "kanagawa" else self.cache
+        if await self._handle_cached_result(update, user_name, user_id, force_check, show_all, cache=cache):
             return
 
-        # Add user to waiting set
         self.waiting_users.add((user_id, update.effective_chat.id))
 
-        # If a check is already running, just return (user will get result when ready)
         if self.check_lock.locked():
             logger.info(f"User {user_name} ({user_id}) queued for result.")
             return
 
-        # Otherwise, start a background task for the check with month navigation
         logger.info(f"User {user_name} ({user_id}) starting background check task with month navigation.")
-        asyncio.create_task(self._background_check_task(context, use_month_navigation=True, show_all=show_all))
+        asyncio.create_task(self._background_check_task(context, use_month_navigation=True, show_all=show_all, source=source))
 
-    async def _background_check_task(self, context, use_month_navigation=False, show_all=False):
+    async def _background_check_task(self, context, use_month_navigation=False, show_all=False, source=None):
         """Background task to perform reservation check and notify users."""
         async with self.check_lock:
             try:
-                logger.info(f"Starting background check task. use_month_navigation={use_month_navigation}, show_all={show_all}")
+                logger.info(f"Starting background check task. use_month_navigation={use_month_navigation}, show_all={show_all}, source={source}")
 
-                # Always get unfiltered results from the reservation checker
-                result = await self.reservation_checker.run_check(
+                checker = self.kanagawa_checker if source == "kanagawa" else self.reservation_checker
+                cache = self.kanagawa_cache if source == "kanagawa" else self.cache
+
+                result = await checker.run_check(
                     send_notifications=False,
                     use_month_navigation=use_month_navigation,
-                    show_all=True  # Always get unfiltered results
+                    show_all=True
                 )
 
-                # Cache the unfiltered result
-                self.update_cache(result)
+                cache['result'] = result
+                cache['timestamp'] = time.time()
 
-                # Apply filtering if needed for display
                 if not show_all:
-                    # Apply filtering to the unfiltered result
                     filtered_result = await self._apply_filtering_to_cached_result(result)
                     result_to_send = filtered_result
                 else:
-                    # Send unfiltered result
                     result_to_send = result
 
                 # Send result to all waiting users in parallel
@@ -410,148 +471,88 @@ The bot will automatically notify you when slots become available.
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
-        help_message = f"""
-📋 <b>Samezu Bot Help</b>
-
-<b>Commands:</b>
-/start - Welcome message
-/check - Manually check for available slots (2-week navigation)
-/check_month - Manually check for available slots (1-month navigation)
-/link - Get the reservation system website
-/status - Check bot status
-/cache - Show detailed cache information
-/help - Show this help message
-
-<b>Subscription Options:</b>
-• <b>/subscribe</b> - Subscribe to relevant slots only (住民票のある方)
-• <b>/subscribe all</b> - Subscribe to ALL available slots (both types)
-• <b>/subscribe nai</b> - Subscribe to 住民票のない方 slots only
-• <b>/subscribe ari</b> - Subscribe to 住民票のある方 slots only
-• <b>/unsubscribe</b> - Unsubscribe from notifications
-
-<b>Command Parameters:</b>
-• <b>/check</b> - Check with 2-week navigation (shows only relevant slots by default)
-• <b>/check all</b> - Check with 2-week navigation (shows ALL available slots)
-• <b>/check force</b> - Force fresh check (ignore cache)
-• <b>/check_month</b> - Check with 1-month navigation (shows only relevant slots by default)
-• <b>/check_month all</b> - Check with 1-month navigation (shows ALL available slots)
-• <b>/check_month force</b> - Force fresh check (ignore cache)
-
-<b>Filtering Options:</b>
-• <b>Default behavior</b> - Shows only slots for "住民票のある方" (relevant applicants)
-• <b>all parameter</b> - Shows ALL available slots (both applicant types)
-• <b>force parameter</b> - Ignores cache and performs fresh check
-
-<b>Features:</b>
-• <b>Automatic slot monitoring</b> - Checks every {CHECK_INTERVAL} seconds
-• Instant notifications when slots become available
-• Manual slot checking with /check command (2-week navigation)
-• Manual slot checking with /check_month command (1-month navigation)
-• Direct website access with /link command
-• Concurrent checking - multiple users can check simultaneously
-• Smart caching - results cached for {CACHE_DURATION} seconds to avoid repeated scraping
-• <b>Selective subscriptions</b> - Choose what type of slots to be notified about
-
-<b>Supported facilities:</b>
-• 府中試験場 (Fuchu Test Center)
-• 鮫洲試験場 (Samezu Test Center)
-
-<b>Multi-user support:</b>
-• Multiple users can use the bot simultaneously
-• Each user can run their own /check command
-• No waiting for other users to finish
-• Use /status to check your current status
-
-<b>Automatic checking:</b>
-• Bot automatically checks for slots every {CHECK_INTERVAL} seconds
-• Subscribers receive notifications when slots are found
-• No manual intervention required
-
-<b>Navigation options:</b>
-• <b>/check</b> - Uses "2週後" (2 weeks later) button for navigation
-• <b>/check_month</b> - Uses "1か月後" (1 month later) button for navigation
-
-<b>Examples:</b>
-• <code>/check</code> - Check with default filtering (relevant slots only)
-• <code>/check all</code> - Check showing all available slots
-• <code>/check force</code> - Force fresh check with default filtering
-• <code>/check_month all force</code> - Force fresh check showing all slots with month navigation
-• <code>/subscribe all</code> - Subscribe to notifications for all slot types
-• <code>/subscribe nai</code> - Subscribe to notifications for 住民票のない方 slots only
-        """
-
+        help_message = (
+            f"📋 <b>Samezu Bot Help</b>\n\n"
+            f"<b>Commands:</b>\n"
+            f"/check — Check for available slots (2-week navigation)\n"
+            f"/check_month — Check for available slots (1-month navigation)\n"
+            f"/subscribe — Subscribe to slot notifications\n"
+            f"/unsubscribe — Unsubscribe from notifications\n"
+            f"/link — Get reservation websites\n"
+            f"/status — Bot and cache status\n"
+            f"/cache — Detailed cache info\n"
+            f"/help — This message\n\n"
+            f"<b>Sources:</b>\n"
+            f"• <b>tokyo</b> (default) — 府中試験場 &amp; 鮫洲試験場\n"
+            f"• <b>kanagawa</b> — 外国免許四輪車 (普通車ＡＭ/ＰＭ)\n\n"
+            f"<b>Check examples:</b>\n"
+            f"• <code>/check</code> — Tokyo, relevant slots\n"
+            f"• <code>/check kanagawa</code> — Kanagawa slots\n"
+            f"• <code>/check all</code> — Tokyo, all slot types\n"
+            f"• <code>/check kanagawa force</code> — Kanagawa, skip cache\n\n"
+            f"<b>Subscribe examples:</b>\n"
+            f"• <code>/subscribe</code> — All sources, relevant type\n"
+            f"• <code>/subscribe kanagawa</code> — Kanagawa only\n"
+            f"• <code>/subscribe samezu fuchu</code> — Tokyo only\n"
+            f"• <code>/subscribe kanagawa all</code> — Kanagawa, all types\n"
+            f"• <code>/subscribe nai</code> — All sources, 住民票のない方 only\n\n"
+            f"<b>Auto-check interval:</b> every {CHECK_INTERVAL}s\n"
+            f"<b>Cache duration:</b> {CACHE_DURATION}s"
+        )
         await update.message.reply_text(help_message, parse_mode='HTML')
 
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command"""
-        # Since we now use a lock, we can't check per-user status, but we can check if a check is in progress
         check_in_progress = self.check_lock.locked()
-        cache_status = ""
-        if self.is_cache_valid():
-            cache_age = self.get_cache_age()
-            cache_age_minutes = int(cache_age // 60)
-            cache_age_seconds = int(cache_age % 60)
-            cache_status = f"\n⚡ <b>Cache Status:</b> Valid ({cache_age_minutes}m {cache_age_seconds}s old)"
-        else:
-            cache_status = "\n⚡ <b>Cache Status:</b> Expired or empty"
-        if check_in_progress:
-            status_message = "⏳ <b>Status</b>\n\n� A reservation check is currently in progress.\n\nPlease wait for it to complete." + cache_status
-        else:
-            status_message = f"✅ <b>Status</b>\n\n🟢 You're ready to use commands.\n\nYou can use /check to start a reservation check.{cache_status}"
-        await update.message.reply_text(status_message, parse_mode='HTML')
+
+        def cache_line(label, cache):
+            if cache['result'] and cache['timestamp']:
+                elapsed = time.time() - cache['timestamp']
+                if elapsed < cache['cache_duration']:
+                    return f"✅ {label}: valid ({int(elapsed // 60)}m {int(elapsed % 60)}s old)"
+            return f"❌ {label}: empty or expired"
+
+        status = "⏳ Check in progress" if check_in_progress else "🟢 Ready"
+        msg = (
+            f"<b>Status</b>\n\n"
+            f"{status}\n\n"
+            f"<b>Cache:</b>\n"
+            f"• {cache_line('Tokyo', self.cache)}\n"
+            f"• {cache_line('Kanagawa', self.kanagawa_cache)}"
+        )
+        await update.message.reply_text(msg, parse_mode='HTML')
 
     async def cache_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /cache command - show detailed cache information"""
-        if not self.cache['result'] or not self.cache['timestamp']: # Changed to check the single cache
-            await update.message.reply_text(
-                "📊 <b>Cache Information</b>\n\n"
-                "❌ <b>No cached results available</b>\n\n"
-                "The unfiltered cache is empty.",
-                parse_mode='HTML'
-            )
-            return
-
-        # Format timestamp
         from datetime import datetime
 
-        # Get cache duration in minutes
-        cache_duration_minutes = CACHE_DURATION // 60
+        def format_cache(label, cache):
+            if not cache['result'] or not cache['timestamp']:
+                return f"<b>{label}:</b> ❌ empty"
+            elapsed = time.time() - cache['timestamp']
+            valid = elapsed < cache['cache_duration']
+            ts = datetime.fromtimestamp(cache['timestamp']).strftime('%H:%M:%S')
+            age = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
+            status = "✅ valid" if valid else "❌ expired"
+            return f"<b>{label}:</b> {status} — {age} old (fetched {ts})"
 
-        # Create detailed message
-        message = f"📊 <b>Cache Information</b>\n\n"
-        message += f"⏰ <b>Cache Duration:</b> {cache_duration_minutes} minutes\n\n"
-
-        # Cache info
-        cache_time = datetime.fromtimestamp(self.cache['timestamp'])
-        cache_formatted = cache_time.strftime('%Y-%m-%d %H:%M:%S')
-        cache_age = self.get_cache_age()
-        cache_minutes = int(cache_age // 60) if cache_age else 0
-        cache_seconds = int(cache_age % 60) if cache_age else 0
-        cache_status = "✅ Valid" if self.is_cache_valid() else "❌ Expired"
-
-        message += f"🔍 <b>Unfiltered Cache:</b>\n"
-        message += f"   📅 <b>Time:</b> {cache_formatted}\n"
-        message += f"   ⏱️ <b>Age:</b> {cache_minutes}m {cache_seconds}s\n"
-        message += f"   📊 <b>Status:</b> {cache_status}\n\n"
-
-        message += "<b>Cache Types:</b>\n"
-        message += "• <b>Unfiltered:</b> Used for /check and /check_month (all available slots)\n\n"
-        message += "<b>Note:</b> The unfiltered cache is independent and has its own 2-minute expiration."
-
+        message = (
+            f"📊 <b>Cache Information</b>\n\n"
+            f"• {format_cache('Tokyo', self.cache)}\n"
+            f"• {format_cache('Kanagawa', self.kanagawa_cache)}\n\n"
+            f"⏰ Duration: {CACHE_DURATION // 60} minutes"
+        )
         await update.message.reply_text(message, parse_mode='HTML')
 
     async def link_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /link command - send the reservation system website URL"""
-        link_message = f"""
-🔗 <b>Reservation System Website</b>
-
-📋 <b>Tokyo Police Department Driving Test Reservation System</b>
-
-🌐 <b>Website:</b> {TARGET_URL}
-
-💡 <b>Note:</b> You can visit this website directly to check for available slots manually.
-        """
-
+        """Handle /link command - send the reservation system website URLs"""
+        link_message = (
+            f"🔗 <b>Reservation Websites</b>\n\n"
+            f"🗼 <b>Tokyo</b> (府中・鮫洲)\n"
+            f"<a href='{TARGET_URL}'>Book Tokyo slot</a>\n\n"
+            f"🏔 <b>Kanagawa</b> (外国免許四輪車)\n"
+            f"<a href='{KANAGAWA_TARGET_URL}'>Book Kanagawa slot</a>"
+        )
         await update.message.reply_text(link_message, parse_mode='HTML')
 
     async def _apply_filtering_to_cached_result(self, cached_result):
@@ -561,8 +562,9 @@ The bot will automatically notify you when slots become available.
             if "❌ No slots" in cached_result or "❌ Error" in cached_result:
                 return cached_result
 
-            # If the cached result doesn't contain slots for "住民票のない方", it's already filtered
-            if "住民票のない方" not in cached_result:
+            # If the cached result contains none of the non-target types, it's already filtered
+            non_target_types = [t for t in ["住民票のある方", "住民票のない方"] if t not in TARGET_SLOT_TYPES]
+            if not any(t in cached_result for t in non_target_types):
                 return cached_result
 
             # Parse the cached result to extract slots and filter them
@@ -593,12 +595,11 @@ The bot will automatically notify you when slots become available.
                     filtered_lines.append(line)
                     continue
 
-                # Filter slot lines - only keep "住民票のある方"
+                # Filter slot lines - only keep TARGET_SLOT_TYPES
                 if "• " in line and "住民票" in line:
-                    if "住民票のある方" in line:
+                    if any(t in line for t in TARGET_SLOT_TYPES):
                         filtered_lines.append(line)
                         has_relevant_slots = True
-                    # Skip "住民票のない方" lines
                     continue
 
                 # Add empty line after facility if it had relevant slots
@@ -615,44 +616,41 @@ The bot will automatically notify you when slots become available.
             filtered_result = '\n'.join(filtered_lines)
 
             # If no relevant slots found, return the "no relevant slots" message
-            if "住民票のある方" not in filtered_result:
-                return "❌ No relevant slots found (only showing 住民票のある方)"
+            if not any(t in filtered_result for t in TARGET_SLOT_TYPES):
+                return f"❌ No relevant slots found (only showing {', '.join(TARGET_SLOT_TYPES)})"
 
             return filtered_result
 
         except Exception as e:
             logger.error(f"Error applying filtering to cached result: {e}")
-            # If filtering fails, return the original cached result
             return cached_result
 
-    async def _send_notifications_to_subscribers(self, result_to_send):
-        """Send notifications to all subscribers based on their subscription type."""
+    async def _send_notifications_to_subscribers(self, result_to_send, source=None):
+        """Send notifications to subscribers, filtered by source and subscription type.
+
+        source: "samezu", "fuchu", "kanagawa", or None (sends to all).
+        """
         subscribers = self.get_subscribers()
         if not subscribers:
             logger.warning("No subscribers to send notifications to.")
             return
 
         tasks = []
-        for chat_id, user_info_with_type in subscribers:
+        for chat_id, user_info_raw in subscribers:
             try:
-                # Ensure the chat_id is an integer for send_message
                 chat_id = int(chat_id)
+                username, sources, subscription_type = self.parse_subscriber_info(user_info_raw)
 
-                # Parse user info and subscription type
-                if '|' in user_info_with_type:
-                    user_info, subscription_type = user_info_with_type.split('|', 1)
-                else:
-                    user_info = user_info_with_type
-                    subscription_type = "relevant"  # Default for old subscribers
+                # Skip if subscriber didn't sign up for this source
+                if source and source not in sources:
+                    logger.info(f"Skipping subscriber {chat_id} - not subscribed to {source}")
+                    continue
 
-                # Filter result based on subscription type
                 filtered_result = await self._filter_result_for_subscription(result_to_send, subscription_type)
 
-                # Only send notification if there are slots for this subscription type
                 if filtered_result and "❌ No" not in filtered_result:
-                    # Create notification message with user tag if available
-                    if user_info and user_info != f"User{chat_id}":
-                        tag = user_info if user_info.startswith('@') else f"@{user_info}"
+                    if username and username != f"User{chat_id}":
+                        tag = username if username.startswith('@') else f"@{username}"
                         notification_message = f"🔔 {tag}\n\n{filtered_result}"
                     else:
                         notification_message = filtered_result
@@ -670,7 +668,6 @@ The bot will automatically notify you when slots become available.
             except Exception as e:
                 logger.error(f"Failed to send notification to subscriber {chat_id}: {e}")
 
-        # Send all messages in parallel
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
             logger.info(f"Sent notifications to {len(tasks)} subscribers.")
@@ -736,7 +733,6 @@ The bot will automatically notify you when slots become available.
                     if "住民票のない方" in line:
                         filtered_lines.append(line)
                         has_relevant_slots = True
-                    # Skip "住民票のある方" lines
                     continue
 
                 # Add empty line after facility if it had relevant slots
@@ -765,39 +761,52 @@ The bot will automatically notify you when slots become available.
 
     # Utility methods
     def _parse_command_args(self, context_args):
-        """Parse command arguments for force and filtering options."""
+        """Parse command arguments for force, filtering, and source options.
+
+        Returns (force_check, show_all, source).
+        source is "kanagawa", "samezu", "fuchu", or None (= default Tokyo).
+        """
         force_check = False
         show_all = False
+        source = None
         if context_args:
             args_lower = [arg.lower() for arg in context_args]
             if "force" in args_lower or "-f" in args_lower:
                 force_check = True
             if "all" in args_lower or "-a" in args_lower:
                 show_all = True
-        return force_check, show_all
+            if "kanagawa" in args_lower:
+                source = "kanagawa"
+            elif "samezu" in args_lower:
+                source = "samezu"
+            elif "fuchu" in args_lower:
+                source = "fuchu"
+        return force_check, show_all, source
 
-    async def _handle_cached_result(self, update, user_name, user_id, force_check, show_all):
+    async def _handle_cached_result(self, update, user_name, user_id, force_check, show_all, cache=None):
         """Handle cached result response for check commands."""
-        if self.is_cache_valid() and not force_check:
-            cache_age = self.get_cache_age()
-            cache_age_minutes = int(cache_age // 60)
-            cache_age_seconds = int(cache_age % 60)
+        if cache is None:
+            cache = self.cache
 
-            # Get cached result and apply filtering if needed
-            cached_result = self.cache['result']
-            result_to_show, cache_type_text = await self._format_cache_response(
-                cached_result, show_all, cache_age_minutes, cache_age_seconds
-            )
+        if cache['result'] and cache['timestamp'] and not force_check:
+            elapsed = time.time() - cache['timestamp']
+            if elapsed < cache['cache_duration']:
+                cache_age_minutes = int(elapsed // 60)
+                cache_age_seconds = int(elapsed % 60)
 
-            logger.info(f"User {user_name} ({user_id}) received cached {cache_type_text} result before background task.")
-            await update.message.reply_text(
-                f"⚡ <b>Using cached result ({cache_type_text})</b>\n\n"
-                f"📊 Result from {cache_age_minutes}m {cache_age_seconds}s ago:\n\n"
-                f"{result_to_show}",
-                parse_mode='HTML'
-            )
-            logger.info(f"Using cached {cache_type_text} result for {user_name} ({user_id}) - cache age: {cache_age_minutes}m {cache_age_seconds}s")
-            return True
+                cached_result = cache['result']
+                result_to_show, cache_type_text = await self._format_cache_response(
+                    cached_result, show_all, cache_age_minutes, cache_age_seconds
+                )
+
+                logger.info(f"User {user_name} ({user_id}) received cached {cache_type_text} result.")
+                await update.message.reply_text(
+                    f"⚡ <b>Using cached result ({cache_type_text})</b>\n\n"
+                    f"📊 Result from {cache_age_minutes}m {cache_age_seconds}s ago:\n\n"
+                    f"{result_to_show}",
+                    parse_mode='HTML'
+                )
+                return True
         return False
 
     async def _format_cache_response(self, cached_result, show_all, cache_age_minutes, cache_age_seconds):

@@ -19,8 +19,11 @@ TARGET_URL = "https://www.keishicho-gto.metro.tokyo.lg.jp/keishicho-u/reserve/of
 # Target facilities to check
 TARGET_FACILITIES = ["府中試験場", "鮫洲試験場"]
 
+# Slot types to monitor (level-2 row filter). Empty list = show all types.
+TARGET_SLOT_TYPES = ["住民票のある方"]
+
 # Filtering Configuration
-# Set to True to show only slots for "住民票のある方" (relevant applicants)
+# Set to True to show only slots matching TARGET_SLOT_TYPES
 # Set to False to show all available slots
 SHOW_ONLY_RELEVANT_APPLICANTS = True
 
@@ -42,3 +45,15 @@ TIMEOUT = 30000  # 30 seconds timeout
 LOADING_INDICATOR_TIMEOUT = 5000  # 5 seconds for loading indicators
 PAGE_TRANSITION_WAIT = 3000  # 3 seconds wait after page transitions
 DYNAMIC_CONTENT_WAIT = 2000  # 2 seconds wait for dynamic content
+
+# =====================
+# Kanagawa Config
+# =====================
+
+KANAGAWA_TARGET_URL = "https://dshinsei.e-kanagawa.lg.jp/140007-u/reserve/offerList_detail?tempSeq=50909&accessFrom=offerList"
+
+# Level-1 row group (facility/exam category)
+KANAGAWA_TARGET_FACILITIES = ["外国免許四輪車"]
+
+# Level-2 rows to monitor within that group
+KANAGAWA_TARGET_SLOT_TYPES = ["普通車ＡＭ", "普通車ＰＭ"]

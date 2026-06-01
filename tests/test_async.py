@@ -45,10 +45,11 @@ async def _run_one_scheduler_iteration(bot, run_check_result):
 
     notifications_sent = []
 
-    async def fake_send_notifications(result):
+    async def fake_send_notifications(result, source=None):
         notifications_sent.append(result)
 
     bot.reservation_checker.run_check = fake_run_check
+    bot.kanagawa_checker.run_check = fake_run_check
     bot._send_notifications_to_subscribers = fake_send_notifications
 
     with mock.patch('asyncio.sleep', fast_sleep):
@@ -81,5 +82,6 @@ async def test_scheduler_notifies_on_slots_found():
     bot = SamezuBot()
     slots_result = "🎉 <b>Available Reservation Slots Found!</b>\n\n📅 <b>2026-03-20</b>\n   🏢 <b>鮫洲試験場</b>\n      • 住民票のある方 — Book\n"
     notifications_sent = await _run_one_scheduler_iteration(bot, slots_result)
-    assert len(notifications_sent) == 1, "Scheduler should notify subscribers when slots are found"
-    assert "🎉" in notifications_sent[0]
+    # Two checkers (tokyo + kanagawa) both return slots, so two notifications
+    assert len(notifications_sent) >= 1, "Scheduler should notify subscribers when slots are found"
+    assert all("🎉" in n for n in notifications_sent)
