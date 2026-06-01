@@ -242,10 +242,11 @@ class SamezuBot:
         cache['result'] = result
         cache['timestamp'] = time.time()
 
-        filtered_result = await self._apply_filtering_to_cached_result(result)
+        # Use the checker's own slot types to determine if there's anything worth notifying
+        filtered_result = self._filter_result_by_slot_types(result, list(checker.target_slot_types))
         if "🎉" in filtered_result:
             logger.info(f"🎉 Found slots for {source}! Sending notifications...")
-            await self._send_notifications_to_subscribers(filtered_result, source=source)
+            await self._send_notifications_to_subscribers(result, source=source)
         else:
             logger.info(f"📭 No relevant slots for {source}")
 
