@@ -223,6 +223,22 @@ async def _run_background_check(bot, source, fake_result):
 
 
 @pytest.mark.asyncio
+async def test_check_kanagawa_cache_hit_uses_kanagawa_filter():
+    bot = SamezuBot()
+    update = DummyUpdate()
+    context = DummyContext()
+    context.args = ["kanagawa"]
+    import time
+    bot.kanagawa_cache['result'] = KANAGAWA_RESULT
+    bot.kanagawa_cache['timestamp'] = time.time()
+    await bot.check_command(update, context)
+    assert "Using cached result" in update.message.last_text
+    assert '普通車ＡＭ' in update.message.last_text
+    assert '住民票のある方' not in update.message.last_text
+    assert '❌' not in update.message.last_text
+
+
+@pytest.mark.asyncio
 async def test_background_check_kanagawa_shows_kanagawa_slots():
     bot = SamezuBot()
     messages = await _run_background_check(bot, source="kanagawa", fake_result=KANAGAWA_RESULT)

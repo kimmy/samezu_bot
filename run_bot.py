@@ -380,8 +380,9 @@ class SamezuBot:
         await update.message.reply_text("🔍 Checking for available slots...\n\nPlease wait, this may take up to 30 seconds.")
         await asyncio.sleep(0)
 
+        checker = self.kanagawa_checker if source == "kanagawa" else self.reservation_checker
         cache = self.kanagawa_cache if source == "kanagawa" else self.cache
-        if await self._handle_cached_result(update, user_name, user_id, force_check, show_all, cache=cache):
+        if await self._handle_cached_result(update, user_name, user_id, force_check, show_all, cache=cache, checker=checker):
             return
 
         self.waiting_users.add((user_id, update.effective_chat.id))
@@ -405,8 +406,9 @@ class SamezuBot:
         await update.message.reply_text("🔍 Checking for available slots using month navigation...\n\nPlease wait, this may take up to 30 seconds.")
         await asyncio.sleep(0)
 
+        checker = self.kanagawa_checker if source == "kanagawa" else self.reservation_checker
         cache = self.kanagawa_cache if source == "kanagawa" else self.cache
-        if await self._handle_cached_result(update, user_name, user_id, force_check, show_all, cache=cache):
+        if await self._handle_cached_result(update, user_name, user_id, force_check, show_all, cache=cache, checker=checker):
             return
 
         self.waiting_users.add((user_id, update.effective_chat.id))
@@ -719,10 +721,12 @@ class SamezuBot:
                 source = "fuchu"
         return force_check, show_all, source
 
-    async def _handle_cached_result(self, update, user_name, user_id, force_check, show_all, cache=None):
+    async def _handle_cached_result(self, update, user_name, user_id, force_check, show_all, cache=None, checker=None):
         """Handle cached result response for check commands."""
         if cache is None:
             cache = self.cache
+        if checker is None:
+            checker = self.reservation_checker
 
         if cache['result'] and cache['timestamp'] and not force_check:
             elapsed = time.time() - cache['timestamp']
@@ -731,9 +735,12 @@ class SamezuBot:
                 cache_age_seconds = int(elapsed % 60)
 
                 cached_result = cache['result']
-                result_to_show, cache_type_text = await self._format_cache_response(
-                    cached_result, show_all, cache_age_minutes, cache_age_seconds
-                )
+                if not show_all:
+                    result_to_show = self._filter_result_by_slot_types(cached_result, list(checker.target_slot_types))
+                    cache_type_text = "filtered"
+                else:
+                    result_to_show = cached_result
+                    cache_type_text = "unfiltered"
 
                 logger.info(f"User {user_name} ({user_id}) received cached {cache_type_text} result.")
                 await update.message.reply_text(
