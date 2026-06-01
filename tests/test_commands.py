@@ -168,3 +168,88 @@ async def test_unsubscribe_command_not_subscribed():
     bot.get_subscribers = lambda: []
     await bot.unsubscribe_command(update, context)
     assert "You are not currently subscribed" in update.message.last_text
+
+
+# --- _background_check_task source-aware filtering ---
+
+KANAGAWA_RESULT = (
+    "🎉 <b>Available Reservation Slots Found!</b>\n\n"
+    "📍 <b>Facilities:</b> 外国免許四輪車\n\n"
+    "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
+    "📅 <b>06/05 (Thu)</b>\n"
+    "   🏢 <b>外国免許四輪車</b>\n"
+    "      • 普通車ＡＭ — <a href='http://example.com'>Book</a>\n"
+    "      • 普通車ＰＭ — <a href='http://example.com'>Book</a>\n"
+    "\n"
+    "🔗 <a href='http://example.com'>Book Now</a>"
+)
+
+TOKYO_RESULT = (
+    "🎉 <b>Available Reservation Slots Found!</b>\n\n"
+    "📍 <b>Facilities:</b> 鮫洲試験場\n\n"
+    "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
+    "📅 <b>06/05 (Thu)</b>\n"
+    "   🏢 <b>鮫洲試験場</b>\n"
+    "      • 住民票のある方 — <a href='http://example.com'>Book</a>\n"
+    "\n"
+    "🔗 <a href='http://example.com'>Book Now</a>"
+)
+
+
+async def _run_background_check(bot, source, fake_result):
+    """Helper: run _background_check_task with a mocked checker result."""
+    messages_sent = []
+
+    class FakeBot:
+        async def send_message(self, chat_id, text, parse_mode=None):
+            messages_sent.append(text)
+
+    class FakeContext:
+        bot = FakeBot()
+
+    async def fake_run_check(*args, **kwargs):
+        return fake_result
+
+    if source == "kanagawa":
+        bot.kanagawa_checker.run_check = fake_run_check
+    else:
+        bot.reservation_checker.run_check = fake_run_check
+
+    bot.waiting_users.add((DummyUser.id, DummyChat.id))
+
+    context = FakeContext()
+    await bot._background_check_task(context, source=source)
+    return messages_sent
+
+
+@pytest.mark.asyncio
+async def test_background_check_kanagawa_shows_kanagawa_slots():
+    bot = SamezuBot()
+    messages = await _run_background_check(bot, source="kanagawa", fake_result=KANAGAWA_RESULT)
+    assert len(messages) == 1
+    assert '普通車ＡＭ' in messages[0]
+    assert '普通車ＰＭ' in messages[0]
+
+
+@pytest.mark.asyncio
+async def test_background_check_kanagawa_does_not_apply_tokyo_filter():
+    bot = SamezuBot()
+    messages = await _run_background_check(bot, source="kanagawa", fake_result=KANAGAWA_RESULT)
+    assert len(messages) == 1
+    assert '住民票のある方' not in messages[0]
+    assert '❌' not in messages[0]
+
+
+@pytest.mark.asyncio
+async def test_background_check_tokyo_shows_tokyo_slots():
+    bot = SamezuBot()
+    messages = await _run_background_check(bot, source=None, fake_result=TOKYO_RESULT)
+    assert len(messages) == 1
+    assert '住民票のある方' in messages[0]
+
+
+@pytest.mark.asyncio
+async def test_background_check_tokyo_does_not_show_kanagawa_types():
+    bot = SamezuBot()
+    messages = await _run_background_check(bot, source=None, fake_result=TOKYO_RESULT)
+    assert '普通車ＡＭ' not in messages[0]
