@@ -294,7 +294,7 @@ class SamezuBot:
 
         # Parse args into sources and type
         source_keywords = {"samezu", "fuchu", "kanagawa"}
-        type_keywords = {"all", "relevant", "nai", "ari", "すべて", "全て", "ない方", "ある方"}
+        type_keywords = {"all", "relevant", "nai", "ari", "am", "pm", "すべて", "全て", "ない方", "ある方"}
 
         args_lower = [a.lower() for a in (context.args or [])]
         sources = [a for a in args_lower if a in source_keywords]
@@ -312,6 +312,10 @@ class SamezuBot:
                 subscription_type = "nai"
             elif arg in ["ari", "ある方"]:
                 subscription_type = "ari"
+            elif arg == "am":
+                subscription_type = "am"
+            elif arg == "pm":
+                subscription_type = "pm"
 
         subscribers = self.get_subscribers()
         existing_ids = [sub[0] for sub in subscribers]
@@ -327,11 +331,14 @@ class SamezuBot:
         self.add_subscriber(chat_id, f"{username}|{sources_str}|{subscription_type}")
 
         sources_display = ", ".join(sources)
+        is_kanagawa_only = sources == ["kanagawa"]
         type_display = {
             "all": "ALL slot types",
-            "nai": "住民票のない方 only",
-            "ari": "住民票のある方 only",
-            "relevant": "relevant slots (住民票のある方)",
+            "nai": "住民票のない方 only (Tokyo)",
+            "ari": "住民票のある方 only (Tokyo)",
+            "am": "普通車ＡＭ only (Kanagawa)",
+            "pm": "普通車ＰＭ only (Kanagawa)",
+            "relevant": "普通車ＡＭ &amp; ＰＭ (Kanagawa)" if is_kanagawa_only else "住民票のある方 (Tokyo)",
         }[subscription_type]
 
         response = (
@@ -491,11 +498,14 @@ class SamezuBot:
             f"• <code>/check all</code> — Tokyo, all slot types\n"
             f"• <code>/check kanagawa force</code> — Kanagawa, skip cache\n\n"
             f"<b>Subscribe examples:</b>\n"
-            f"• <code>/subscribe</code> — All sources, relevant type\n"
-            f"• <code>/subscribe kanagawa</code> — Kanagawa only\n"
-            f"• <code>/subscribe samezu fuchu</code> — Tokyo only\n"
-            f"• <code>/subscribe kanagawa all</code> — Kanagawa, all types\n"
-            f"• <code>/subscribe nai</code> — All sources, 住民票のない方 only\n\n"
+            f"• <code>/subscribe</code> — All sources, relevant defaults\n"
+            f"• <code>/subscribe kanagawa</code> — Kanagawa only (普通車ＡＭ/ＰＭ)\n"
+            f"• <code>/subscribe samezu fuchu</code> — Tokyo only (住民票のある方)\n"
+            f"• <code>/subscribe kanagawa am</code> — Kanagawa 普通車ＡＭ only\n"
+            f"• <code>/subscribe kanagawa pm</code> — Kanagawa 普通車ＰＭ only\n"
+            f"• <code>/subscribe nai</code> — Tokyo 住民票のない方 only\n"
+            f"• <code>/subscribe ari</code> — Tokyo 住民票のある方 only\n"
+            f"• <code>/subscribe all</code> — All sources, all slot types\n\n"
             f"<b>Auto-check interval:</b> every {CHECK_INTERVAL}s\n"
             f"<b>Cache duration:</b> {CACHE_DURATION}s"
         )
@@ -555,81 +565,87 @@ class SamezuBot:
         )
         await update.message.reply_text(link_message, parse_mode='HTML')
 
+    def _resolve_keep_types(self, subscription_type, source):
+        """Return the slot type strings to keep for a given subscription type and source.
+
+        Tokyo types:  住民票のある方, 住民票のない方
+        Kanagawa types: 普通車ＡＭ, 普通車ＰＭ
+
+        Returns None to mean "keep all".
+        """
+        is_kanagawa = source == "kanagawa"
+        if subscription_type == "all":
+            return None
+        if is_kanagawa:
+            if subscription_type == "am":
+                return ["普通車ＡＭ"]
+            if subscription_type == "pm":
+                return ["普通車ＰＭ"]
+            # relevant / default for kanagawa = both AM and PM
+            return list(KANAGAWA_TARGET_SLOT_TYPES)
+        else:
+            if subscription_type == "nai":
+                return ["住民票のない方"]
+            if subscription_type in ("ari", "relevant"):
+                return ["住民票のある方"]
+            # fallback: use configured default
+            return list(TARGET_SLOT_TYPES)
+
+    def _filter_result_by_slot_types(self, result, keep_types):
+        """Filter a formatted result string to only include lines matching keep_types.
+
+        keep_types=None means return result unchanged.
+        """
+        if keep_types is None:
+            return result
+        if "❌ No slots" in result or "❌ Error" in result:
+            return result
+
+        # If none of the target types appear at all, bail early
+        if not any(t in result for t in keep_types):
+            return f"❌ No slots found for {', '.join(keep_types)}"
+
+        lines = result.split('\n')
+        filtered_lines = []
+        in_slot_section = False
+        has_relevant_slots = False
+
+        for line in lines:
+            if any(h in line for h in ["🎉 Available Reservation Slots Found!", "📍 Facilities:", "To book, click", "🔗 Book Now"]):
+                filtered_lines.append(line)
+                continue
+            if "📅 <b>" in line and "</b>" in line:
+                in_slot_section = True
+                has_relevant_slots = False
+                filtered_lines.append(line)
+                continue
+            if "🏢 <b>" in line and "</b>" in line:
+                filtered_lines.append(line)
+                continue
+            if "• " in line:
+                if any(t in line for t in keep_types):
+                    filtered_lines.append(line)
+                    has_relevant_slots = True
+                continue
+            if line.strip() == "" and in_slot_section:
+                if has_relevant_slots:
+                    filtered_lines.append(line)
+                in_slot_section = False
+                continue
+            if not in_slot_section or has_relevant_slots:
+                filtered_lines.append(line)
+
+        filtered_result = '\n'.join(filtered_lines)
+        if not any(t in filtered_result for t in keep_types):
+            return f"❌ No slots found for {', '.join(keep_types)}"
+        return filtered_result
+
     async def _apply_filtering_to_cached_result(self, cached_result):
-        """Apply filtering to cached unfiltered results to show only relevant slots."""
-        try:
-            # If the cached result is already filtered or has no slots, return as is
-            if "❌ No slots" in cached_result or "❌ Error" in cached_result:
-                return cached_result
-
-            # If the cached result contains none of the non-target types, it's already filtered
-            non_target_types = [t for t in ["住民票のある方", "住民票のない方"] if t not in TARGET_SLOT_TYPES]
-            if not any(t in cached_result for t in non_target_types):
-                return cached_result
-
-            # Parse the cached result to extract slots and filter them
-            lines = cached_result.split('\n')
-            filtered_lines = []
-            in_slot_section = False
-            current_date = None
-            current_facility = None
-            has_relevant_slots = False
-
-            for line in lines:
-                # Keep header lines
-                if any(header in line for header in ["🎉 Available Reservation Slots Found!", "📍 Facilities:", "To book, click", "🔗 Book Now"]):
-                    filtered_lines.append(line)
-                    continue
-
-                # Keep date headers
-                if "📅 <b>" in line and "</b>" in line:
-                    current_date = line
-                    in_slot_section = True
-                    has_relevant_slots = False
-                    filtered_lines.append(line)
-                    continue
-
-                # Keep facility headers
-                if "🏢 <b>" in line and "</b>" in line:
-                    current_facility = line
-                    filtered_lines.append(line)
-                    continue
-
-                # Filter slot lines - only keep TARGET_SLOT_TYPES
-                if "• " in line and "住民票" in line:
-                    if any(t in line for t in TARGET_SLOT_TYPES):
-                        filtered_lines.append(line)
-                        has_relevant_slots = True
-                    continue
-
-                # Add empty line after facility if it had relevant slots
-                if line.strip() == "" and in_slot_section and has_relevant_slots:
-                    filtered_lines.append(line)
-                    in_slot_section = False
-                    continue
-
-                # Keep other lines
-                if not in_slot_section or has_relevant_slots:
-                    filtered_lines.append(line)
-
-            # Join the filtered lines
-            filtered_result = '\n'.join(filtered_lines)
-
-            # If no relevant slots found, return the "no relevant slots" message
-            if not any(t in filtered_result for t in TARGET_SLOT_TYPES):
-                return f"❌ No relevant slots found (only showing {', '.join(TARGET_SLOT_TYPES)})"
-
-            return filtered_result
-
-        except Exception as e:
-            logger.error(f"Error applying filtering to cached result: {e}")
-            return cached_result
+        """Apply default (relevant) filtering to a Tokyo cached result."""
+        return self._filter_result_by_slot_types(cached_result, list(TARGET_SLOT_TYPES))
 
     async def _send_notifications_to_subscribers(self, result_to_send, source=None):
-        """Send notifications to subscribers, filtered by source and subscription type.
-
-        source: "samezu", "fuchu", "kanagawa", or None (sends to all).
-        """
+        """Send notifications to subscribers, filtered by source and subscription type."""
         subscribers = self.get_subscribers()
         if not subscribers:
             logger.warning("No subscribers to send notifications to.")
@@ -641,14 +657,14 @@ class SamezuBot:
                 chat_id = int(chat_id)
                 username, sources, subscription_type = self.parse_subscriber_info(user_info_raw)
 
-                # Skip if subscriber didn't sign up for this source
                 if source and source not in sources:
                     logger.info(f"Skipping subscriber {chat_id} - not subscribed to {source}")
                     continue
 
-                filtered_result = await self._filter_result_for_subscription(result_to_send, subscription_type)
+                keep_types = self._resolve_keep_types(subscription_type, source)
+                filtered_result = self._filter_result_by_slot_types(result_to_send, keep_types)
 
-                if filtered_result and "❌ No" not in filtered_result:
+                if filtered_result and "❌" not in filtered_result:
                     if username and username != f"User{chat_id}":
                         tag = username if username.startswith('@') else f"@{username}"
                         notification_message = f"🔔 {tag}\n\n{filtered_result}"
@@ -674,90 +690,10 @@ class SamezuBot:
         else:
             logger.info("No notifications sent - no relevant slots for any subscribers.")
 
-    async def _filter_result_for_subscription(self, result, subscription_type):
-        """Filter result based on subscription type."""
-        if subscription_type == "all":
-            # Show all slots
-            return result
-        elif subscription_type == "nai":
-            # Show only 住民票のない方 slots
-            return await self._filter_for_nai_only(result)
-        elif subscription_type == "ari":
-            # Show only 住民票のある方 slots
-            return await self._apply_filtering_to_cached_result(result)
-        else:  # relevant (default)
-            # Show only 住民票のある方 slots (filtered)
-            return await self._apply_filtering_to_cached_result(result)
-
-    async def _filter_for_nai_only(self, result):
-        """Filter result to show only 住民票のない方 slots."""
-        try:
-            # If the result is already filtered or has no slots, return as is
-            if "❌ No slots" in result or "❌ Error" in result:
-                return result
-
-            # If the result doesn't contain slots for "住民票のない方", return no slots message
-            if "住民票のない方" not in result:
-                return "❌ No 住民票のない方 slots found"
-
-            # Parse the result to extract slots and filter them
-            lines = result.split('\n')
-            filtered_lines = []
-            in_slot_section = False
-            current_date = None
-            current_facility = None
-            has_relevant_slots = False
-
-            for line in lines:
-                # Keep header lines
-                if any(header in line for header in ["🎉 Available Reservation Slots Found!", "📍 Facilities:", "To book, click", "🔗 Book Now"]):
-                    filtered_lines.append(line)
-                    continue
-
-                # Keep date headers
-                if "📅 <b>" in line and "</b>" in line:
-                    current_date = line
-                    in_slot_section = True
-                    has_relevant_slots = False
-                    filtered_lines.append(line)
-                    continue
-
-                # Keep facility headers
-                if "🏢 <b>" in line and "</b>" in line:
-                    current_facility = line
-                    filtered_lines.append(line)
-                    continue
-
-                # Filter slot lines - only keep "住民票のない方"
-                if "• " in line and "住民票" in line:
-                    if "住民票のない方" in line:
-                        filtered_lines.append(line)
-                        has_relevant_slots = True
-                    continue
-
-                # Add empty line after facility if it had relevant slots
-                if line.strip() == "" and in_slot_section and has_relevant_slots:
-                    filtered_lines.append(line)
-                    in_slot_section = False
-                    continue
-
-                # Keep other lines
-                if not in_slot_section or has_relevant_slots:
-                    filtered_lines.append(line)
-
-            # Join the filtered lines
-            filtered_result = '\n'.join(filtered_lines)
-
-            # If no relevant slots found, return the "no relevant slots" message
-            if "住民票のない方" not in filtered_result:
-                return "❌ No 住民票のない方 slots found"
-
-            return filtered_result
-
-        except Exception as e:
-            logger.error(f"Error applying naibo filtering to result: {e}")
-            # If filtering fails, return the original result
-            return result
+    async def _filter_result_for_subscription(self, result, subscription_type, source=None):
+        """Filter result based on subscription type and source."""
+        keep_types = self._resolve_keep_types(subscription_type, source)
+        return self._filter_result_by_slot_types(result, keep_types)
 
     # Utility methods
     def _parse_command_args(self, context_args):

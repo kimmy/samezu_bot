@@ -91,7 +91,7 @@ FORMATTED_MIXED = (
 @pytest.mark.asyncio
 async def test_filter_subscription_all_returns_both_types():
     bot = make_bot()
-    result = await bot._filter_result_for_subscription(FORMATTED_MIXED, "all")
+    result = await bot._filter_result_for_subscription(FORMATTED_MIXED, "all", source="tokyo")
     assert '住民票のある方' in result
     assert '住民票のない方' in result
 
@@ -99,7 +99,7 @@ async def test_filter_subscription_all_returns_both_types():
 @pytest.mark.asyncio
 async def test_filter_subscription_ari_keeps_ari_removes_nai():
     bot = make_bot()
-    result = await bot._filter_result_for_subscription(FORMATTED_MIXED, "ari")
+    result = await bot._filter_result_for_subscription(FORMATTED_MIXED, "ari", source="tokyo")
     assert '住民票のある方' in result
     assert '住民票のない方' not in result
 
@@ -107,7 +107,7 @@ async def test_filter_subscription_ari_keeps_ari_removes_nai():
 @pytest.mark.asyncio
 async def test_filter_subscription_nai_keeps_nai_removes_ari():
     bot = make_bot()
-    result = await bot._filter_result_for_subscription(FORMATTED_MIXED, "nai")
+    result = await bot._filter_result_for_subscription(FORMATTED_MIXED, "nai", source="tokyo")
     assert '住民票のない方' in result
     assert '住民票のある方' not in result
 
@@ -115,8 +115,8 @@ async def test_filter_subscription_nai_keeps_nai_removes_ari():
 @pytest.mark.asyncio
 async def test_filter_subscription_relevant_same_as_ari():
     bot = make_bot()
-    ari = await bot._filter_result_for_subscription(FORMATTED_MIXED, "ari")
-    relevant = await bot._filter_result_for_subscription(FORMATTED_MIXED, "relevant")
+    ari = await bot._filter_result_for_subscription(FORMATTED_MIXED, "ari", source="tokyo")
+    relevant = await bot._filter_result_for_subscription(FORMATTED_MIXED, "relevant", source="tokyo")
     assert ari == relevant
 
 
@@ -124,7 +124,7 @@ async def test_filter_subscription_relevant_same_as_ari():
 async def test_filter_subscription_passes_through_no_slots():
     bot = make_bot()
     no_slots = "❌ No slots"
-    result = await bot._filter_result_for_subscription(no_slots, "ari")
+    result = await bot._filter_result_for_subscription(no_slots, "ari", source="tokyo")
     assert result == no_slots
 
 
@@ -132,7 +132,7 @@ async def test_filter_subscription_passes_through_no_slots():
 async def test_filter_subscription_passes_through_error():
     bot = make_bot()
     error = "❌ Error during reservation check: timeout"
-    result = await bot._filter_result_for_subscription(error, "all")
+    result = await bot._filter_result_for_subscription(error, "all", source="tokyo")
     assert result == error
 
 
@@ -241,6 +241,78 @@ async def test_kanagawa_checker_unfiltered_shows_all():
     )
     assert '普通車ＡＭ' in result
     assert '準中型車ＡＭ' in result
+
+
+# --- _resolve_keep_types ---
+
+def test_resolve_keep_types_all_returns_none():
+    bot = make_bot()
+    assert bot._resolve_keep_types("all", "tokyo") is None
+    assert bot._resolve_keep_types("all", "kanagawa") is None
+
+
+def test_resolve_keep_types_tokyo_ari():
+    bot = make_bot()
+    assert bot._resolve_keep_types("ari", "tokyo") == ["住民票のある方"]
+
+
+def test_resolve_keep_types_tokyo_nai():
+    bot = make_bot()
+    assert bot._resolve_keep_types("nai", "tokyo") == ["住民票のない方"]
+
+
+def test_resolve_keep_types_kanagawa_relevant_returns_both():
+    bot = make_bot()
+    result = bot._resolve_keep_types("relevant", "kanagawa")
+    assert "普通車ＡＭ" in result
+    assert "普通車ＰＭ" in result
+
+
+def test_resolve_keep_types_kanagawa_am():
+    bot = make_bot()
+    assert bot._resolve_keep_types("am", "kanagawa") == ["普通車ＡＭ"]
+
+
+def test_resolve_keep_types_kanagawa_pm():
+    bot = make_bot()
+    assert bot._resolve_keep_types("pm", "kanagawa") == ["普通車ＰＭ"]
+
+
+# --- Kanagawa result filtering via _filter_result_by_slot_types ---
+
+FORMATTED_KANAGAWA = (
+    "🎉 <b>Available Reservation Slots Found!</b>\n\n"
+    "📍 <b>Facilities:</b> 外国免許四輪車\n\n"
+    "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
+    "📅 <b>06/05 (Thu)</b>\n"
+    "   🏢 <b>外国免許四輪車</b>\n"
+    "      • 普通車ＡＭ — <a href='http://example.com'>Book</a>\n"
+    "      • 普通車ＰＭ — <a href='http://example.com'>Book</a>\n"
+    "      • 準中型車ＡＭ — <a href='http://example.com'>Book</a>\n"
+    "\n"
+    "🔗 <a href='http://example.com'>Book Now</a>"
+)
+
+
+def test_filter_kanagawa_am_only():
+    bot = make_bot()
+    result = bot._filter_result_by_slot_types(FORMATTED_KANAGAWA, ["普通車ＡＭ"])
+    assert '普通車ＡＭ' in result
+    assert '普通車ＰＭ' not in result
+    assert '準中型車ＡＭ' not in result
+
+
+def test_filter_kanagawa_pm_only():
+    bot = make_bot()
+    result = bot._filter_result_by_slot_types(FORMATTED_KANAGAWA, ["普通車ＰＭ"])
+    assert '普通車ＰＭ' in result
+    assert '普通車ＡＭ' not in result
+
+
+def test_filter_kanagawa_none_returns_all():
+    bot = make_bot()
+    result = bot._filter_result_by_slot_types(FORMATTED_KANAGAWA, None)
+    assert result == FORMATTED_KANAGAWA
 
 
 # --- _parse_command_args source parsing ---
