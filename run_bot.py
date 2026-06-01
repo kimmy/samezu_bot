@@ -437,8 +437,7 @@ class SamezuBot:
                 cache['timestamp'] = time.time()
 
                 if not show_all:
-                    filtered_result = await self._apply_filtering_to_cached_result(result)
-                    result_to_send = filtered_result
+                    result_to_send = self._filter_result_by_slot_types(result, list(checker.target_slot_types))
                 else:
                     result_to_send = result
 
