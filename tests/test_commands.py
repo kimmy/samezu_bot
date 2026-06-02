@@ -178,8 +178,8 @@ KANAGAWA_RESULT = (
     "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
     "📅 <b>06/05 (Thu)</b>\n"
     "   🏢 <b>外国免許四輪車</b>\n"
-    "      • 普通車ＡＭ — <a href='http://example.com'>Book</a>\n"
-    "      • 普通車ＰＭ — <a href='http://example.com'>Book</a>\n"
+    "      • 普通車ＡＭ\n"
+    "      • 普通車ＰＭ\n"
     "\n"
     "🔗 <a href='http://example.com'>Book Now</a>"
 )
@@ -190,7 +190,7 @@ TOKYO_RESULT = (
     "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
     "📅 <b>06/05 (Thu)</b>\n"
     "   🏢 <b>鮫洲試験場</b>\n"
-    "      • 住民票のある方 — <a href='http://example.com'>Book</a>\n"
+    "      • 住民票のある方\n"
     "\n"
     "🔗 <a href='http://example.com'>Book Now</a>"
 )

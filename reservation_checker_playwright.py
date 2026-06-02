@@ -498,33 +498,25 @@ class ReservationChecker:
             date = slot['date']
             facility = slot['facility']
             applicant_type = slot['applicant_type']
-            link = slot.get('link', self.target_url)
             if date not in slots_by_date_facility:
                 slots_by_date_facility[date] = {}
             if facility not in slots_by_date_facility[date]:
                 slots_by_date_facility[date][facility] = []
-            slots_by_date_facility[date][facility].append({
-                'applicant_type': applicant_type,
-                'link': link
-            })
+            slots_by_date_facility[date][facility].append(applicant_type)
 
-        # Create message
         message = "🎉 <b>Available Reservation Slots Found!</b>\n\n"
         message += f"📍 <b>Facilities:</b> {', '.join(self.target_facilities)}\n\n"
         message += "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
 
         for date, facilities in slots_by_date_facility.items():
             message += f"📅 <b>{date}</b>\n"
-            for facility, slot_details in facilities.items():
+            for facility, applicant_types in facilities.items():
                 message += f"   🏢 <b>{facility}</b>\n"
-                for detail in slot_details:
-                    applicant_type = detail['applicant_type']
-                    link = detail['link']
-                    message += f"      • {applicant_type} — <a href='{link}'>Book</a>\n"
+                for applicant_type in applicant_types:
+                    message += f"      • {applicant_type}\n"
             message += "\n"
 
-        if not any(slot.get('link') for slot in slots):
-            message += f"🔗 <a href='{self.target_url}'>Book Now</a>"
+        message += f"🔗 <a href='{self.target_url}'>Book Now</a>"
 
         return message
 

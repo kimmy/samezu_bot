@@ -80,7 +80,7 @@ async def test_scheduler_does_not_notify_on_no_slots():
 @pytest.mark.asyncio
 async def test_scheduler_notifies_on_slots_found():
     bot = SamezuBot()
-    slots_result = "🎉 <b>Available Reservation Slots Found!</b>\n\n📅 <b>2026-03-20</b>\n   🏢 <b>鮫洲試験場</b>\n      • 住民票のある方 — Book\n"
+    slots_result = "🎉 <b>Available Reservation Slots Found!</b>\n\n📅 <b>2026-03-20</b>\n   🏢 <b>鮫洲試験場</b>\n      • 住民票のある方\n"
     notifications_sent = await _run_one_scheduler_iteration(bot, slots_result)
     # Two checkers (tokyo + kanagawa) both return slots, so two notifications
     assert len(notifications_sent) >= 1, "Scheduler should notify subscribers when slots are found"

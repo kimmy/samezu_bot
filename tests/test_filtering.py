@@ -54,8 +54,7 @@ async def test_process_slots_returns_no_slots_when_filtered_out():
     bot = make_bot()
     result = await bot.reservation_checker.process_available_slots(TOKYO_SLOTS_NAI_ONLY, send_notifications=False, filter_applicants=True)
     assert '❌' in result
-    # No booking lines should appear — the string only appears in the "no slots" explanation
-    assert '— <a href=' not in result
+    assert '🎉' not in result
 
 
 @pytest.mark.asyncio
@@ -81,8 +80,8 @@ FORMATTED_MIXED = (
     "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
     "📅 <b>06/05 (Thu)</b>\n"
     "   🏢 <b>鮫洲試験場</b>\n"
-    "      • 住民票のある方 — <a href='http://example.com'>Book</a>\n"
-    "      • 住民票のない方 — <a href='http://example.com'>Book</a>\n"
+    "      • 住民票のある方\n"
+    "      • 住民票のない方\n"
     "\n"
     "🔗 <a href='http://example.com'>Book Now</a>"
 )
@@ -286,9 +285,9 @@ FORMATTED_KANAGAWA = (
     "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
     "📅 <b>06/05 (Thu)</b>\n"
     "   🏢 <b>外国免許四輪車</b>\n"
-    "      • 普通車ＡＭ — <a href='http://example.com'>Book</a>\n"
-    "      • 普通車ＰＭ — <a href='http://example.com'>Book</a>\n"
-    "      • 準中型車ＡＭ — <a href='http://example.com'>Book</a>\n"
+    "      • 普通車ＡＭ\n"
+    "      • 普通車ＰＭ\n"
+    "      • 準中型車ＡＭ\n"
     "\n"
     "🔗 <a href='http://example.com'>Book Now</a>"
 )
