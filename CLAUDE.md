@@ -61,9 +61,11 @@ Each has its own cache dict (`self.cache` / `self.kanagawa_cache`). The schedule
 
 **Subscriber storage** — `subscribers.txt` stores one subscriber per line as `chat_id|username|sources|type` (pipe-delimited).
 - `sources`: comma-separated list — `samezu`, `fuchu`, `kanagawa` (old 2-field entries default to all sources)
-- `type`: `relevant` (default), `all`, `nai` (住民票のない方 only), `ari` (住民票のある方 only)
+- `type`: `relevant` (default), `all`, `nai` (住民票のない方 only), `ari` (住民票のある方 only), `am` (普通車ＡＭ only, Kanagawa), `pm` (普通車ＰＭ only, Kanagawa)
 
 **Caching** — One unfiltered cache per source. Filtering applied at read time. Duration: `CACHE_DURATION` seconds (default 120s).
+
+**Scheduler notifications** — After each check, the filtered result is compared against `self.last_notified[source]`. Notifications are only sent if the result has changed since the last alert. When no slots are found, `last_notified` resets so a future reappearance triggers a fresh notification.
 
 **Concurrency** — `check_lock` (an `asyncio.Lock`) prevents concurrent scrapes. Users who request a check while one is in progress are added to `waiting_users` and receive the result when the running check completes.
 
