@@ -79,6 +79,9 @@ class SamezuBot:
             'cache_duration': CACHE_DURATION
         }
 
+        # Last result that was sent to subscribers per source — skip notification if unchanged
+        self.last_notified: dict = {'tokyo': None, 'kanagawa': None}
+
         # Register command handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
@@ -242,13 +245,19 @@ class SamezuBot:
         cache['result'] = result
         cache['timestamp'] = time.time()
 
-        # Use the checker's own slot types to determine if there's anything worth notifying
         filtered_result = self._filter_result_by_slot_types(result, list(checker.target_slot_types))
-        if "🎉" in filtered_result:
-            logger.info(f"🎉 Found slots for {source}! Sending notifications...")
-            await self._send_notifications_to_subscribers(result, source=source)
-        else:
+        if "🎉" not in filtered_result:
             logger.info(f"📭 No relevant slots for {source}")
+            self.last_notified[source] = None  # Reset so next open slots trigger a notification
+            return
+
+        if filtered_result == self.last_notified[source]:
+            logger.info(f"🔕 Slots unchanged for {source}, skipping duplicate notification")
+            return
+
+        logger.info(f"🎉 New slots for {source}! Sending notifications...")
+        self.last_notified[source] = filtered_result
+        await self._send_notifications_to_subscribers(result, source=source)
 
     async def unsubscribe_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /unsubscribe command."""

@@ -85,3 +85,25 @@ async def test_scheduler_notifies_on_slots_found():
     # Two checkers (tokyo + kanagawa) both return slots, so two notifications
     assert len(notifications_sent) >= 1, "Scheduler should notify subscribers when slots are found"
     assert all("🎉" in n for n in notifications_sent)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_does_not_notify_duplicate():
+    bot = SamezuBot()
+    slots_result = "🎉 <b>Available Reservation Slots Found!</b>\n\n📅 <b>2026-03-20</b>\n   🏢 <b>鮫洲試験場</b>\n      • 住民票のある方\n"
+    # First iteration — should notify
+    await _run_one_scheduler_iteration(bot, slots_result)
+    # Second iteration with identical result — should not notify again
+    notifications_sent = await _run_one_scheduler_iteration(bot, slots_result)
+    assert notifications_sent == [], "Scheduler should not re-notify when slots are unchanged"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_notifies_again_after_slots_clear_and_reappear():
+    bot = SamezuBot()
+    slots_result = "🎉 <b>Available Reservation Slots Found!</b>\n\n📅 <b>2026-03-20</b>\n   🏢 <b>鮫洲試験場</b>\n      • 住民票のある方\n"
+    no_slots = "❌ No slots"
+    await _run_one_scheduler_iteration(bot, slots_result)  # first notification
+    await _run_one_scheduler_iteration(bot, no_slots)       # slots gone — resets last_notified
+    notifications_sent = await _run_one_scheduler_iteration(bot, slots_result)  # same slots reappear
+    assert len(notifications_sent) >= 1, "Should notify again after slots cleared and reappeared"
