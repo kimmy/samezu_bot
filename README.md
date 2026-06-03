@@ -1,252 +1,181 @@
 # Samezu Bot
 
-A Python-based Telegram bot that monitors Tokyo (府中・鮫洲) and Kanagawa driving-test reservation calendars and sends Telegram notifications when slots open.
+Telegram bot that monitors **Tokyo** (府中・鮫洲) and **Kanagawa** (外国免許四輪車) driving-test reservation calendars and notifies subscribers when slots open.
+
+**Production entrypoint:** `python run_bot.py` (systemd on VPS). See [docs/CONTRACT.md](docs/CONTRACT.md) for source routing, cache, and notification rules.
 
 ## Features
 
-- 🔍 **Automated Checking**: Monitors 府中試験場, 鮫洲試験場 (Tokyo), and 外国免許四輪車 (Kanagawa)
-- 📱 **Telegram Notifications**: Sends instant notifications when slots are found
-- ⚙️ **Flexible Configuration**: Support for multiple users with customizable notification preferences
-- 🔒 **Secure**: Local configuration with sensitive data kept private
-- 🚀 **Easy Setup**: Simple installation and configuration process
-- ⏰ **Scheduled Checking**: Automatically checks every 5 minutes
-- 📅 **Multiple Navigation**: Supports both 2-week and 1-month navigation
-- 🏷️ **User Tagging**: Tags users in notifications for easy identification
+- Automated checks every 5 minutes (Tokyo + Kanagawa)
+- Per-subscriber sources (`samezu`, `fuchu`, `kanagawa`) and slot-type filters (`ari`, `nai`, `am`, `pm`, `all`)
+- Manual `/check` and `/check_month` with shared scrape lock and per-source wait queues
+- Result cache with duplicate-notification suppression
+- Playwright scraper (headless Chromium) with Cloudflare waiting-room handling
 
 ## Requirements
 
 - Python 3.8+
-- Chrome/Chromium browser
-- Telegram Bot Token
-- Chat IDs for notifications
+- Chromium (via Playwright)
+- Telegram bot token ([BotFather](https://t.me/BotFather))
 
-## Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone <your-repo-url>
-   cd samezu_bot
-   ```
-
-2. **Create and activate virtual environment:**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Install Playwright browsers:**
-   ```bash
-   playwright install chromium
-   ```
-
-## Configuration
-
-### Local Setup
-
-1. **Copy the config template:**
-   ```bash
-   cp config_template.py config.py
-   ```
-
-2. **Update config.py with your credentials:**
-   ```python
-   # Telegram Bot Configuration
-   TELEGRAM_BOT_TOKEN = "your_actual_bot_token_here"
-   
-   # Other settings are already configured in config_template.py
-   ```
-
-3. **Get your Telegram Bot Token:**
-   - Message @BotFather on Telegram
-   - Create a new bot: `/newbot`
-   - Copy the token provided
-
-4. **Get your Chat ID:**
-   - Message your bot
-   - Visit: `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
-   - Look for your `chat_id` in the response
-
-## Usage
-
-### Start the Bot
+## Quick start
 
 ```bash
-# Activate virtual environment
+git clone <your-repo-url>
+cd samezu_bot
+python3 -m venv venv
 source venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
 
-# Run the bot
+cp config_template.py config.py
+# Edit config.py — set TELEGRAM_BOT_TOKEN (or use env on the server)
+
 python run_bot.py
 ```
 
-### Bot Commands
+**Important:** Do not run `python run_bot.py` locally while the same bot token is active on the VPS — Telegram updates will conflict. Use a separate test token locally, or stop the remote service first.
 
-Once the bot is running, you can use these commands in Telegram:
+## Telegram commands
 
-- `/start` - Welcome message and bot status
-- `/check` - Check slots (2-week navigation; Tokyo by default)
-- `/check kanagawa` - Kanagawa calendar
-- `/check samezu` or `/check fuchu` - Tokyo, one facility
-- `/check_month` - Same as `/check` but 1-month navigation
-- `/check force` - Force a fresh scrape (ignore cache)
-- `/check all` - Show all slot types for the selected source
-- `/status` - Check bot status and last check time
-- `/cache` - Show detailed cache information and timestamp
-- `/link` - Get the reservation system website
-- `/help` - Show available commands
+| Command | Description |
+|---------|-------------|
+| `/start` | Welcome and status |
+| `/help` | Full command list |
+| `/check` | Check slots (2-week navigation; Tokyo default) |
+| `/check_month` | Same as `/check` with 1-month navigation |
+| `/check kanagawa` | Kanagawa calendar |
+| `/check samezu` / `/check fuchu` | Tokyo, single facility |
+| `/check force` | Fresh scrape (ignore cache) |
+| `/check all` | All slot types for selected source |
+| `/subscribe` | Subscribe (see options below) |
+| `/unsubscribe` | Remove subscription |
+| `/status` | Bot and cache status |
+| `/cache` | Detailed cache info |
+| `/link` | Reservation URLs |
 
-### Subscription Options
+### Subscribe examples
 
-Subscribers are stored in `subscribers.txt` as `chat_id|username|sources|type`.
+Stored in `subscribers.txt` as `chat_id|username|sources|type`.
 
-- `/subscribe` — All Tokyo sources, relevant slot types (住民票のある方)
-- `/subscribe kanagawa` — Kanagawa only (普通車ＡＭ/ＰＭ)
-- `/subscribe samezu fuchu` — Tokyo facilities
-- `/subscribe nai` / `ari` / `am` / `pm` — Slot-type filters
-- `/subscribe all` — All sources, all slot types
-- `/unsubscribe` — Remove subscription
-
-### Automatic Checking
-
-The bot automatically checks for slots every 5 minutes. You'll receive notifications when:
-- ✅ Slots become available (based on your subscription type)
-- ⚠️ Errors occur during checking
-
-## Configuration Options
-
-### Check Interval
-
-Modify `CHECK_INTERVAL` in `config.py` to change how often the bot checks for slots (default: 300 seconds = 5 minutes).
-
-### Cache Duration
-
-Modify `CACHE_DURATION` in `config.py` to change how long results are cached (default: 120 seconds = 2 minutes).
-
-### Target Facilities
-
-The bot checks these facilities by default:
-- 府中試験場 (Fuchu Test Center)
-- 鮫洲試験場 (Samezu Test Center)
-
-You can modify `TARGET_FACILITIES` in `config.py` to add or remove facilities.
-
-### Filtering Configuration
-
-- `SHOW_ONLY_RELEVANT_APPLICANTS`: Set to `True` to show only slots for "住民票のある方" (default: True)
-- Set to `False` to show all available slots
-
-### Timeout Configuration
-
-- `TIMEOUT`: Main timeout for page operations (default: 30000ms = 30 seconds)
-- `LOADING_INDICATOR_TIMEOUT`: Timeout for loading indicators (default: 5000ms = 5 seconds)
-- `PAGE_TRANSITION_WAIT`: Wait time after page transitions (default: 3000ms = 3 seconds)
-- `DYNAMIC_CONTENT_WAIT`: Wait time for dynamic content (default: 2000ms = 2 seconds)
-
-## Running Locally
-
-### Keep Your Laptop Awake
-
-Since you're running locally, make sure your laptop stays awake:
-
-- **macOS**: System Preferences > Energy Saver > Prevent computer from sleeping
-- **Windows**: Power & Sleep settings > Never sleep
-- **Linux**: Disable sleep mode in power management
-
-### Background Running
-
-The bot will continue running even if you lock your laptop, but it will stop if your laptop goes to sleep.
-
-## Troubleshooting
-
-### Common Issues
-
-1. **"externally-managed-environment" error:**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
-
-2. **Playwright browser issues:**
-   ```bash
-   playwright install chromium
-   ```
-
-3. **Telegram bot not responding:**
-   - Check your bot token in `config.py`
-   - Make sure you've messaged your bot first
-   - Try the `/start` command
-
-4. **Import errors:**
-   - Make sure you're in the virtual environment
-   - Check that all dependencies are installed
-
-### Logs
-
-After `python run_bot.py` (production entrypoint):
-
-- **`bot.log`** — bot/scheduler (`run_bot` logger)
-- **`reservation_checker.log`** — Playwright scraper only
-- **stderr** — same records via journalctl when using systemd
-
-See `docs/OPERATIONAL_RISKS.md` for debugging missed alerts.
-
-## Security
-
-- ✅ Sensitive data stored locally in `config.py`
-- ✅ `config.py` excluded from Git (`.gitignore`)
-- ✅ No credentials committed to repository
-- ✅ Local-only deployment
-
-## Project Structure
-
-```
-samezu_bot/
-├── run_bot.py                      # Telegram bot, scheduler, cache, notifications
-├── reservation_checker_playwright.py  # Playwright scraper (production)
-├── config_template.py              # Defaults; override in config.py
-├── scripts/deploy.sh               # VPS deploy (pytest + restart)
-├── tests/                          # Regression suite (pytest)
-├── pytest.ini
-└── subscribers.txt                 # Local subscriber store (gitignored)
+```text
+/subscribe                          # Tokyo (samezu+fuchu), relevant slots
+/subscribe kanagawa                   # Kanagawa only
+/subscribe samezu fuchu               # Tokyo facilities only
+/subscribe kanagawa am                # 普通車ＡＭ only
+/subscribe nai | ari | pm | all       # Slot-type filters
 ```
 
-## Built With
+Tokyo “relevant” default: 住民票のある方. Kanagawa relevant: 普通車ＡＭ and 普通車ＰＭ.
 
-- **Python** - Core programming language
-- **Playwright** - Web automation and scraping
-- **python-telegram-bot** - Telegram bot API integration
-- **asyncio** - Asynchronous programming
+## Sources (subscriber vs scheduler)
+
+| You subscribe / `/check` | Scheduler scrapes | Facility filter |
+|--------------------------|-------------------|-----------------|
+| `samezu` | `tokyo` | 鮫洲試験場 |
+| `fuchu` | `tokyo` | 府中試験場 |
+| `samezu` + `fuchu` | `tokyo` | both |
+| `kanagawa` | `kanagawa` | 外国免許四輪車 |
+
+Details: [docs/CONTRACT.md](docs/CONTRACT.md).
+
+## Configuration
+
+Defaults live in `config_template.py`; override in `config.py` (gitignored) or via environment on the VPS.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TELEGRAM_BOT_TOKEN` | — | Bot token |
+| `CHECK_INTERVAL` | 300 | Seconds between scheduled checks |
+| `CACHE_DURATION` | 120 | Cache TTL (seconds) |
+| `TARGET_FACILITIES` / `TARGET_SLOT_TYPES` | Tokyo | 府中・鮫洲, 住民票のある方 |
+| `KANAGAWA_*` | — | Kanagawa URL, facility, AM/PM types |
+| `HEADLESS` | `True` | Playwright headless mode |
+| `TIMEOUT` | 30000 | Page load timeout (ms) |
+
+## Logs
+
+`app_logging.configure_logging()` runs before the scraper loads.
+
+| Output | Contents |
+|--------|----------|
+| `bot.log` | `run_bot` logger — commands, scheduler, cache, notifications |
+| `reservation_checker.log` | Playwright / HTTP scraper loggers |
+| stderr / `journalctl` | All loggers (systemd captures stderr) |
+
+On VPS: `sudo journalctl -u samezu_bot -f` and `tail -f bot.log reservation_checker.log`.
+
+Missed alerts: [docs/OPERATIONAL_RISKS.md](docs/OPERATIONAL_RISKS.md).
 
 ## Testing
 
 ```bash
 source venv/bin/activate
-pytest -q          # tests/ only (see pytest.ini)
+pytest -q    # tests/ only (pytest.ini); 100+ hermetic tests, no live network
 ```
+
+Manual probes belong in `scripts/` or local-only files (see `.gitignore`). Parser samples live under `tests/fixtures/`.
 
 ## Deployment (VPS)
 
-Production runs on a VPS under systemd. Do not run `python run_bot.py` locally while the VPS bot is active (competing Telegram updates).
+Production uses systemd (`deploy/samezu_bot.service`):
 
-```bash
-./scripts/deploy.sh   # git pull, pytest on server, systemctl restart
+```ini
+ExecStart=/home/ubuntu/samezu_bot/venv/bin/python run_bot.py
 ```
 
-See `CLAUDE.md` for SSH host, logs, and architecture notes.
+From your machine (after pushing to `main`):
 
-## Development
+```bash
+chmod +x scripts/deploy.sh
+./scripts/deploy.sh
+```
 
-This project was **vibe coded** using **Cursor** with AI assistance, demonstrating modern development practices and robust error handling.
+This SSHs to the server, `git pull`, runs `pytest`, and restarts `samezu_bot`. See [CLAUDE.md](CLAUDE.md) for host, SSH key, and manual commands.
+
+## Project layout
+
+```text
+samezu_bot/
+├── run_bot.py                         # Production Telegram bot
+├── reservation_checker_playwright.py  # Playwright scraper
+├── app_logging.py                     # bot.log / scraper log split
+├── config_template.py                 # Defaults
+├── config.py                          # Local overrides (gitignored)
+├── docs/
+│   ├── CONTRACT.md                    # Runtime behavior spec
+│   └── OPERATIONAL_RISKS.md           # CI vs live site, debugging
+├── scripts/
+│   ├── deploy.sh                      # VPS deploy
+│   ├── README.md
+│   └── reservation_checker_requests.py  # HTTP experiment (not production)
+├── deploy/samezu_bot.service          # systemd unit template
+├── tests/
+│   ├── fixtures/                      # Saved calendar HTML (parser tests)
+│   └── ...                            # pytest suite
+└── pytest.ini
+```
+
+## Scraping and debugging
+
+| Script | Use |
+|--------|-----|
+| `python run_bot.py` | **Production** — filtered notifications |
+| `python reservation_checker_playwright.py` | Debug scrape; prints only, no Telegram |
+| `python scripts/reservation_checker_requests.py` | HTTP experiment; prints only |
+
+Standalone scrapers do **not** apply subscriber/source filters. Telegram from a scraper requires `ALLOW_STANDALONE_NOTIFY=1` and is for debugging only — use `run_bot.py` in production.
+
+## Security
+
+- `config.py`, `subscribers.txt`, and `*.log` are gitignored
+- Do not commit tokens or subscriber chat IDs
+- Use a dedicated VPS SSH key and restrict `TELEGRAM_BOT_TOKEN` to the service environment
+
+## Built with
+
+Python · Playwright · [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) · asyncio
 
 ## License
 
-This project is for personal use only.
-
----
-
-**Note**: This bot is designed for local use only. For 24/7 operation, consider deploying to a cloud service like Railway, Render, or Fly.io.
+Personal use only.

@@ -26,3 +26,9 @@ python scripts/reservation_checker_requests.py
 ```
 
 Same guard as Playwright: enabling Telegram requires `ALLOW_STANDALONE_NOTIFY=1` and `send_notifications=True` in code — not used by the CLI. Do not cron this script against production `subscribers.txt`.
+
+For live Playwright debugging from repo root:
+
+```bash
+python reservation_checker_playwright.py
+```

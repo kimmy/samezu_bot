@@ -33,3 +33,5 @@ debug_page.py
 debug_screenshot.png
 test_bot_connection.py
 test_requests.py
+test_slot_detection.py
+test_html_structure.py
