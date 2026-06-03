@@ -86,6 +86,23 @@ def test_filter_facilities_fuchu_removes_samezu():
     assert "🏢 <b>鮫洲試験場</b>" not in result
 
 
+def test_filter_facilities_no_orphan_header_without_bullets():
+    """Facility with no slot lines must not appear after filtering."""
+    bot = make_bot()
+    formatted = (
+        "🎉 <b>Available Reservation Slots Found!</b>\n\n"
+        "📅 <b>06/05 (Thu)</b>\n"
+        "   🏢 <b>鮫洲試験場</b>\n"
+        "   🏢 <b>府中試験場</b>\n"
+        "      • 住民票のある方\n"
+        "\n"
+        "🔗 <a href='http://example.com'>Book Now</a>"
+    )
+    result = bot._filter_result_by_facilities(formatted, ["鮫洲試験場"])
+    assert "❌" in result
+    assert "🏢 <b>鮫洲試験場</b>" not in result
+
+
 def test_filter_facilities_no_match_returns_no_slots():
     bot = make_bot()
     result = bot._filter_result_by_facilities(FORMATTED_TOKYO_BOTH, ["外国免許四輪車"])

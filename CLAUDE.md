@@ -30,18 +30,26 @@ pytest tests/test_async.py::test_subscribe_command
 
 ## Deployment
 
-Hosted on a VPS via systemd. To deploy:
+Hosted on a VPS via systemd. Prefer the deploy script (runs `pytest` on the server before restart):
 
 ```bash
-# SSH into the server and pull + restart
+chmod +x scripts/deploy.sh
+./scripts/deploy.sh
+```
+
+Manual equivalent:
+
+```bash
 ssh -i ~/.ssh/samezu_bot2.key ubuntu@131.186.56.62 \
-  "cd ~/samezu_bot && git pull && sudo systemctl restart samezu_bot && sudo systemctl status samezu_bot --no-pager"
+  "cd ~/samezu_bot && git pull && ./venv/bin/python -m pytest -q && sudo systemctl restart samezu_bot && sudo systemctl status samezu_bot --no-pager"
 
 # Check logs on the server
 ssh -i ~/.ssh/samezu_bot2.key ubuntu@131.186.56.62 "sudo journalctl -u samezu_bot -f"
 ```
 
 **Do not run `python run_bot.py` locally while the VPS is active** — both instances will compete for the same Telegram updates and users will get split/missing responses. Stop the service first or use a separate test bot token in `config.py`.
+
+**Do not use `python reservation_checker_playwright.py` for production notifications** — it bypasses subscriber/source filtering. Use `run_bot.py` only. See `docs/CONTRACT.md` and `docs/OPERATIONAL_RISKS.md`.
 
 ## Architecture
 
@@ -67,7 +75,7 @@ Each has its own cache dict (`self.cache` / `self.kanagawa_cache`). The schedule
 
 **Scheduler notifications** — After each check, the filtered result is compared against `self.last_notified[source]`. Notifications are only sent if the result has changed since the last alert. When no slots are found, `last_notified` resets so a future reappearance triggers a fresh notification.
 
-**Concurrency** — `check_lock` (an `asyncio.Lock`) prevents concurrent scrapes. Users who request a check while one is in progress are added to `waiting_users` and receive the result when the running check completes.
+**Concurrency** — `check_lock` (an `asyncio.Lock`) prevents concurrent scrapes. `waiting_users` is keyed by scrape key (`tokyo` / `kanagawa`); incompatible waiters are re-queued and chained scrapes run via `_start_chained_scrapes_for_remaining_waiters()`. Scheduler source `tokyo` matches subscriber sources `samezu` / `fuchu`.
 
 ## Key Configuration Values (config_template.py)
 

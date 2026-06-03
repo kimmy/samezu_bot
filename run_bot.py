@@ -15,7 +15,8 @@ from collections import defaultdict
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from reservation_checker_playwright import ReservationChecker
+
+from app_logging import configure_logging
 
 # Import all template values as defaults
 from config_template import *
@@ -30,15 +31,10 @@ try:
 except ImportError:
     pass  # Use template values only
 
-# Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    handlers=[
-        logging.FileHandler('bot.log'),
-        logging.StreamHandler()
-    ]
-)
+configure_logging()
+
+from reservation_checker_playwright import ReservationChecker
+
 logger = logging.getLogger(__name__)
 
 class SamezuBot:
@@ -50,8 +46,6 @@ class SamezuBot:
         """Initialize the bot with configuration and state management."""
         self.application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-        # Initialize state management
-        self.subscribers = set()
         # scrape_key -> {(user_id, chat_id, check_source, show_all, use_month_navigation, force_check), ...}
         self.waiting_users = defaultdict(set)
         self.check_lock = asyncio.Lock()
@@ -100,27 +94,6 @@ class SamezuBot:
         self.application.add_handler(CommandHandler("link", self.link_command))
         self.application.add_handler(CommandHandler("cache", self.cache_command))
         self.application.add_handler(CommandHandler("status", self.status_command))
-
-    # Cache management methods
-    def is_cache_valid(self):
-        """Check if the cached result is still valid."""
-        if not self.cache['result'] or not self.cache['timestamp']:
-            return False
-
-        elapsed_time = time.time() - self.cache['timestamp']
-        return elapsed_time < self.cache['cache_duration']
-
-    def update_cache(self, result):
-        """Update the cache with new unfiltered result and timestamp."""
-        self.cache['result'] = result
-        self.cache['timestamp'] = time.time()
-        logger.info(f"Cache updated with new unfiltered result at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-    def get_cache_age(self):
-        """Get the age of the cached result in seconds."""
-        if not self.cache['timestamp']:
-            return None
-        return time.time() - self.cache['timestamp']
 
     # Subscriber management methods
     def _read_subscriber_lines(self):
@@ -810,7 +783,10 @@ class SamezuBot:
         if "❌ No slots" in result or "❌ Error" in result:
             return result
 
-        if not any(f in result for f in keep_facilities):
+        if not any(
+            "🏢 <b>" in line and any(f in line for f in keep_facilities)
+            for line in result.split("\n")
+        ):
             return f"❌ No slots found for {', '.join(keep_facilities)}"
 
         lines = result.split('\n')
@@ -819,6 +795,7 @@ class SamezuBot:
         has_relevant_facility = False
         current_facility_kept = False
         pending_date_line = None
+        pending_facility_line = None
 
         for line in lines:
             if any(
@@ -834,38 +811,43 @@ class SamezuBot:
                 continue
             if "📅 <b>" in line and "</b>" in line:
                 pending_date_line = line
+                pending_facility_line = None
                 in_slot_section = True
                 has_relevant_facility = False
                 current_facility_kept = False
                 continue
             if "🏢 <b>" in line and "</b>" in line:
+                pending_facility_line = line
                 current_facility_kept = any(f in line for f in keep_facilities)
+                continue
+            if "• " in line:
                 if current_facility_kept:
                     if pending_date_line is not None:
                         filtered_lines.append(pending_date_line)
                         pending_date_line = None
+                    if pending_facility_line is not None:
+                        filtered_lines.append(pending_facility_line)
+                        pending_facility_line = None
                     filtered_lines.append(line)
                     has_relevant_facility = True
-                continue
-            if "• " in line:
-                if current_facility_kept:
-                    filtered_lines.append(line)
                 continue
             if line.strip() == "" and in_slot_section:
                 if has_relevant_facility:
                     if pending_date_line is not None:
                         filtered_lines.append(pending_date_line)
                         pending_date_line = None
+                    pending_facility_line = None
                     filtered_lines.append(line)
                 else:
                     pending_date_line = None
+                    pending_facility_line = None
                 in_slot_section = False
                 continue
             if not in_slot_section or has_relevant_facility:
                 filtered_lines.append(line)
 
         filtered_result = '\n'.join(filtered_lines)
-        if not any(f in filtered_result for f in keep_facilities):
+        if not any("• " in line for line in filtered_result.split("\n")):
             return f"❌ No slots found for {', '.join(keep_facilities)}"
 
         summary_lines = []
@@ -902,6 +884,13 @@ class SamezuBot:
             # fallback: use configured default
             return list(TARGET_SLOT_TYPES)
 
+    @staticmethod
+    def _slot_bullet_label(line):
+        """Extract applicant/slot type text from a bullet line."""
+        if "•" not in line:
+            return None
+        return line.split("•", 1)[-1].strip()
+
     def _filter_result_by_slot_types(self, result, keep_types):
         """Filter a formatted result string to only include lines matching keep_types.
 
@@ -912,48 +901,75 @@ class SamezuBot:
         if "❌ No slots" in result or "❌ Error" in result:
             return result
 
-        # If none of the target types appear at all, bail early
-        if not any(t in result for t in keep_types):
+        keep_set = set(keep_types)
+        if not any(
+            (label := self._slot_bullet_label(line)) and label in keep_set
+            for line in result.split("\n")
+        ):
             return f"❌ No slots found for {', '.join(keep_types)}"
 
         lines = result.split('\n')
         filtered_lines = []
         in_slot_section = False
         has_relevant_slots = False
+        pending_date_line = None
+        pending_facility_line = None
 
         for line in lines:
-            if any(h in line for h in ["🎉 Available Reservation Slots Found!", "📍 Facilities:", "To book, click", "🔗 Book Now"]):
+            if any(
+                h in line
+                for h in [
+                    "🎉 Available Reservation Slots Found!",
+                    "📍",
+                    "To book, click",
+                    "🔗",
+                ]
+            ):
                 filtered_lines.append(line)
                 continue
             if "📅 <b>" in line and "</b>" in line:
+                pending_date_line = line
+                pending_facility_line = None
                 in_slot_section = True
                 has_relevant_slots = False
-                filtered_lines.append(line)
                 continue
             if "🏢 <b>" in line and "</b>" in line:
-                filtered_lines.append(line)
+                pending_facility_line = line
                 continue
             if "• " in line:
-                if any(t in line for t in keep_types):
+                label = self._slot_bullet_label(line)
+                if label in keep_set:
+                    if pending_date_line is not None:
+                        filtered_lines.append(pending_date_line)
+                        pending_date_line = None
+                    if pending_facility_line is not None:
+                        filtered_lines.append(pending_facility_line)
+                        pending_facility_line = None
                     filtered_lines.append(line)
                     has_relevant_slots = True
                 continue
             if line.strip() == "" and in_slot_section:
                 if has_relevant_slots:
+                    if pending_date_line is not None:
+                        filtered_lines.append(pending_date_line)
+                        pending_date_line = None
+                    pending_facility_line = None
                     filtered_lines.append(line)
+                else:
+                    pending_date_line = None
+                    pending_facility_line = None
                 in_slot_section = False
                 continue
             if not in_slot_section or has_relevant_slots:
                 filtered_lines.append(line)
 
         filtered_result = '\n'.join(filtered_lines)
-        if not any(t in filtered_result for t in keep_types):
+        if not any(
+            (label := self._slot_bullet_label(line)) and label in keep_set
+            for line in filtered_result.split("\n")
+        ):
             return f"❌ No slots found for {', '.join(keep_types)}"
         return filtered_result
-
-    async def _apply_filtering_to_cached_result(self, cached_result):
-        """Apply default (relevant) filtering to a Tokyo cached result."""
-        return self._filter_result_by_slot_types(cached_result, list(TARGET_SLOT_TYPES))
 
     def _notification_messages_for_subscribers(self, result_to_send, source=None):
         """Build (chat_id, message) pairs for subscribers who should be notified."""
@@ -1077,20 +1093,6 @@ class SamezuBot:
             )
             return True
         return False
-
-    async def _format_cache_response(self, cached_result, show_all, cache_age_minutes, cache_age_seconds):
-        """Format cached result response with appropriate filtering."""
-        if not show_all:
-            # Apply filtering to cached unfiltered results
-            filtered_result = await self._apply_filtering_to_cached_result(cached_result)
-            result_to_show = filtered_result
-            cache_type_text = "filtered"
-        else:
-            # Show unfiltered results
-            result_to_show = cached_result
-            cache_type_text = "unfiltered"
-
-        return result_to_show, cache_type_text
 
 class BotRunner:
     def __init__(self):

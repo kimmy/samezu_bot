@@ -5,7 +5,7 @@ Test script to check slot detection logic
 
 import asyncio
 import logging
-from reservation_checker import ReservationChecker
+from reservation_checker_playwright import ReservationChecker
 
 # Set up logging
 logging.basicConfig(

@@ -50,6 +50,33 @@ async def test_process_slots_filters_to_ari_only():
 
 
 @pytest.mark.asyncio
+async def test_process_slots_exact_type_match_not_substring():
+    """住民票のない方 must not match the 住民票のある方 filter."""
+    bot = make_bot()
+    result = await bot.reservation_checker.process_available_slots(
+        TOKYO_SLOTS_NAI_ONLY, send_notifications=False, filter_applicants=True
+    )
+    assert '❌' in result
+
+
+@pytest.mark.asyncio
+async def test_process_slots_html_escapes_special_characters():
+    bot = make_bot()
+    slots = [
+        {
+            'date': '06/05 <test>',
+            'facility': '鮫洲 & 試験場',
+            'applicant_type': '住民票のある方',
+        }
+    ]
+    result = await bot.reservation_checker.process_available_slots(
+        slots, send_notifications=False, filter_applicants=False
+    )
+    assert '&amp;' in result
+    assert '<test>' not in result
+
+
+@pytest.mark.asyncio
 async def test_process_slots_returns_no_slots_when_filtered_out():
     bot = make_bot()
     result = await bot.reservation_checker.process_available_slots(TOKYO_SLOTS_NAI_ONLY, send_notifications=False, filter_applicants=True)
@@ -82,6 +109,20 @@ FORMATTED_MIXED = (
     "   🏢 <b>鮫洲試験場</b>\n"
     "      • 住民票のある方\n"
     "      • 住民票のない方\n"
+    "\n"
+    "🔗 <a href='http://example.com'>Book Now</a>"
+)
+
+# Two Tokyo facilities under one date; slot types differ per facility (regression: orphan 🏢 headers).
+FORMATTED_TOKYO_TWO_FACILITIES_SPLIT_TYPES = (
+    "🎉 <b>Available Reservation Slots Found!</b>\n\n"
+    "📍 <b>Facilities:</b> 府中試験場, 鮫洲試験場\n\n"
+    "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
+    "📅 <b>06/05 (Thu)</b>\n"
+    "   🏢 <b>鮫洲試験場</b>\n"
+    "      • 住民票のない方\n"
+    "   🏢 <b>府中試験場</b>\n"
+    "      • 住民票のある方\n"
     "\n"
     "🔗 <a href='http://example.com'>Book Now</a>"
 )
@@ -133,6 +174,32 @@ async def test_filter_subscription_passes_through_error():
     error = "❌ Error during reservation check: timeout"
     result = await bot._filter_result_for_subscription(error, "all", source="tokyo")
     assert result == error
+
+
+def test_filter_slot_types_two_facilities_drops_orphan_samezu_header():
+    """ARI filter must not leave 鮫洲 when only 府中 has matching bullets."""
+    bot = make_bot()
+    result = bot._filter_result_by_slot_types(
+        FORMATTED_TOKYO_TWO_FACILITIES_SPLIT_TYPES, ["住民票のある方"]
+    )
+    assert "🏢 <b>府中試験場</b>" in result
+    assert "住民票のある方" in result
+    assert "📅 <b>06/05 (Thu)</b>" in result
+    assert "🏢 <b>鮫洲試験場</b>" not in result
+    assert "住民票のない方" not in result
+
+
+def test_apply_check_filters_samezu_no_false_positive_when_only_fuchu_has_ari():
+    bot = make_bot()
+    result = bot._apply_check_filters(
+        FORMATTED_TOKYO_TWO_FACILITIES_SPLIT_TYPES,
+        bot.reservation_checker,
+        show_all=False,
+        check_source="samezu",
+    )
+    assert "❌" in result
+    assert "🎉" not in result
+    assert "🏢 <b>鮫洲試験場</b>" not in result
 
 
 # --- Subscriber round-trip ---

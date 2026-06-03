@@ -6,7 +6,10 @@ and sends Telegram notifications when slots are found.
 """
 
 import asyncio
+import html
 import logging
+import os
+import re
 from datetime import datetime
 from typing import List, Dict, Tuple
 from playwright.async_api import async_playwright, Page
@@ -24,15 +27,9 @@ try:
 except ImportError:
     pass  # Use template values only
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('reservation_checker.log'),
-        logging.StreamHandler()
-    ]
-)
+DATE_MD_PATTERN = re.compile(r'\d{1,2}/\d{1,2}')
+FULL_DATE_PATTERN = re.compile(r'(\d{4})年(\d{2})月(\d{2})日')
+
 logger = logging.getLogger(__name__)
 
 class ReservationChecker:
@@ -45,7 +42,7 @@ class ReservationChecker:
         self.source_name = source_name
 
     async def send_telegram_message(self, message: str):
-        """Send message to all subscribed users (only for slot notifications)."""
+        """Send to every line in subscribers.txt (legacy). Production must use run_bot.py instead."""
         try:
             with open('subscribers.txt', 'r') as f:
                 subscribers = []
@@ -125,48 +122,59 @@ class ReservationChecker:
 
         raise Exception("Timed out waiting for Cloudflare waiting room to pass (3 minutes)")
 
+    @staticmethod
+    def _normalize_label(text: str) -> str:
+        return ' '.join(text.strip().split())
+
+    @classmethod
+    def _applicant_type_matches(cls, applicant_type: str, target_types: List[str]) -> bool:
+        return cls._normalize_label(applicant_type) in target_types
+
+    async def _collect_date_headers(self, rows) -> List[str]:
+        """Find the calendar header row (cells look like MM/DD)."""
+        for row in rows:
+            cells = await row.query_selector_all('td')
+            if len(cells) < 3:
+                continue
+            headers = []
+            for cell in cells:
+                date_text = await cell.text_content()
+                if not date_text or not date_text.strip():
+                    continue
+                clean_date = self._normalize_label(date_text)
+                if DATE_MD_PATTERN.search(clean_date):
+                    headers.append(clean_date)
+            if len(headers) >= 3:
+                return headers
+        return []
+
+    async def _date_for_slot_cell(self, cell, index: int, date_headers: List[str]) -> str:
+        if index < len(date_headers):
+            return date_headers[index]
+
+        sr_only = await cell.query_selector('.sr-only')
+        if sr_only:
+            sr_text = await sr_only.text_content()
+            if sr_text:
+                date_match = FULL_DATE_PATTERN.search(sr_text)
+                if date_match:
+                    _year, month, day = date_match.groups()
+                    return f"{month}/{day}"
+
+        return f"Unknown date {index + 1}"
+
     async def get_available_dates(self, page: Page) -> List[Dict]:
         """Extract available dates from the current page."""
         available_slots = []
 
         try:
-            # Get date information from the second row (which contains the actual dates)
             rows = await page.query_selector_all('tr')
-            week_dates = []
+            date_headers = await self._collect_date_headers(rows)
 
-            if len(rows) > 1:
-                # Get the second row (index 1) which contains the dates
-                date_row = rows[1]
-                date_cells = await date_row.query_selector_all('td')
-
-                for cell in date_cells:
-                    date_text = await cell.text_content()
-                    if date_text and date_text.strip():
-                        # Clean up the date text (remove extra whitespace and newlines)
-                        clean_date = ' '.join(date_text.strip().split())
-                        if clean_date and len(clean_date) > 2:  # Filter out empty or very short text
-                            week_dates.append(clean_date)
-
-            # Log the week range
-            if week_dates:
-                start_date = week_dates[0] if len(week_dates) > 0 else "Unknown"
-                end_date = week_dates[-1] if len(week_dates) > 0 else "Unknown"
-                logger.info(f"📅 Checking dates: {start_date} to {end_date}")
+            if date_headers:
+                logger.info(f"📅 Checking dates: {date_headers[0]} to {date_headers[-1]}")
             else:
                 logger.info("📅 Date range: Unable to determine")
-
-            # First, get the date headers from the second row
-            date_headers = []
-            rows = await page.query_selector_all('tr')
-            if len(rows) > 1:
-                date_row = rows[1]  # The row with dates
-                date_header_cells = await date_row.query_selector_all('td')
-                for cell in date_header_cells:
-                    date_text = await cell.text_content()
-                    if date_text and date_text.strip():
-                        clean_date = ' '.join(date_text.strip().split())
-                        if clean_date and len(clean_date) > 2:
-                            date_headers.append(clean_date)
 
             # Find all rows for target facilities
             for row in rows:
@@ -195,34 +203,15 @@ class ReservationChecker:
                     continue
 
                 applicant_type = await applicant_cell.text_content()
-                applicant_type = applicant_type.strip() if applicant_type else "Unknown"
+                applicant_type = self._normalize_label(applicant_type) if applicant_type else "Unknown"
 
-                # Check all date cells for availability (exclude first two cells)
-                date_cells = await row.query_selector_all('td:not(:first-child):not(:nth-child(2))')
+                row_cells = await row.query_selector_all('th, td')
+                if len(row_cells) < 3:
+                    continue
+                date_cells = row_cells[2:]
 
                 for i, cell in enumerate(date_cells):
-                    # Use the date from our pre-collected headers, but handle overflow
-                    if i < len(date_headers):
-                        date_text = date_headers[i]
-                    else:
-                        # If we have more cells than headers, try to extract date from the cell itself
-                        # Look for sr-only text that might contain the date
-                        sr_only = await cell.query_selector('.sr-only')
-                        if sr_only:
-                            sr_text = await sr_only.text_content()
-                            if sr_text and '年' in sr_text and '月' in sr_text and '日' in sr_text:
-                                # Extract date from sr-only text (e.g., "2025年08月21日")
-                                import re
-                                date_match = re.search(r'(\d{4})年(\d{2})月(\d{2})日', sr_text)
-                                if date_match:
-                                    year, month, day = date_match.groups()
-                                    date_text = f"{month}/{day}"
-                                else:
-                                    date_text = f"Unknown date {i + 1}"
-                            else:
-                                date_text = f"Unknown date {i + 1}"
-                        else:
-                            date_text = f"Unknown date {i + 1}"
+                    date_text = await self._date_for_slot_cell(cell, i, date_headers)
 
                     # Check for available slot
                     svg = await cell.query_selector('svg')
@@ -382,7 +371,7 @@ class ReservationChecker:
             logger.warning(f"Error checking for end of dates: {e}")
             return False
 
-    async def run_check(self, send_notifications=True, use_month_navigation=False, show_all=False):
+    async def run_check(self, send_notifications=False, use_month_navigation=False, show_all=False):
         """Main method to run the reservation check."""
         logger.info("Starting reservation check...")
 
@@ -449,10 +438,21 @@ class ReservationChecker:
                 if available_slots:
                     # Use show_all parameter to override default filtering
                     filter_applicants = not show_all  # If show_all=True, don't filter
-                    result_message = await self.process_available_slots(available_slots, send_notifications, filter_applicants=filter_applicants)
-                    # Only notify subscribers if this is a scheduled/cron run
+                    result_message = await self.process_available_slots(
+                        available_slots, send_notifications=False, filter_applicants=filter_applicants
+                    )
                     if send_notifications:
-                        await self.send_telegram_message(result_message)
+                        if os.environ.get("ALLOW_STANDALONE_NOTIFY") == "1":
+                            logger.warning(
+                                "Sending via scraper send_telegram_message (bypasses run_bot filters). "
+                                "Use only for deliberate debugging."
+                            )
+                            await self.send_telegram_message(result_message)
+                        else:
+                            logger.warning(
+                                "send_notifications=True ignored. Run run_bot.py for production delivery, "
+                                "or set ALLOW_STANDALONE_NOTIFY=1 to force legacy broadcast."
+                            )
                     return result_message
                 else:
                     logger.info("No available slots found")
@@ -485,7 +485,10 @@ class ReservationChecker:
         if filter_applicants:
             original_count = len(slots)
             if self.target_slot_types:
-                filtered_slots = [slot for slot in slots if any(t in slot['applicant_type'] for t in self.target_slot_types)]
+                filtered_slots = [
+                    slot for slot in slots
+                    if self._applicant_type_matches(slot['applicant_type'], self.target_slot_types)
+                ]
             else:
                 filtered_slots = slots
             if not filtered_slots:
@@ -509,11 +512,11 @@ class ReservationChecker:
         message += "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
 
         for date, facilities in slots_by_date_facility.items():
-            message += f"📅 <b>{date}</b>\n"
+            message += f"📅 <b>{html.escape(date)}</b>\n"
             for facility, applicant_types in facilities.items():
-                message += f"   🏢 <b>{facility}</b>\n"
+                message += f"   🏢 <b>{html.escape(facility)}</b>\n"
                 for applicant_type in applicant_types:
-                    message += f"      • {applicant_type}\n"
+                    message += f"      • {html.escape(applicant_type)}\n"
             message += "\n"
 
         message += f"🔗 <a href='{self.target_url}'>Book Now</a>"
@@ -521,9 +524,13 @@ class ReservationChecker:
         return message
 
 async def main():
-    """Main entry point."""
+    """CLI debug: scrape and print; never notifies subscribers."""
+    from app_logging import configure_logging
+
+    configure_logging()
     checker = ReservationChecker()
-    await checker.run_check()
+    result = await checker.run_check(send_notifications=False)
+    print(result)
 
 if __name__ == "__main__":
     asyncio.run(main())

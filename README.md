@@ -1,10 +1,10 @@
 # Samezu Bot
 
-A Python-based Telegram bot that automatically checks for available driving test slots at Samezu facilities and sends notifications when slots become available.
+A Python-based Telegram bot that monitors Tokyo (府中・鮫洲) and Kanagawa driving-test reservation calendars and sends Telegram notifications when slots open.
 
 ## Features
 
-- 🔍 **Automated Checking**: Monitors 府中試験場 and 鮫洲試験場 for available slots
+- 🔍 **Automated Checking**: Monitors 府中試験場, 鮫洲試験場 (Tokyo), and 外国免許四輪車 (Kanagawa)
 - 📱 **Telegram Notifications**: Sends instant notifications when slots are found
 - ⚙️ **Flexible Configuration**: Support for multiple users with customizable notification preferences
 - 🔒 **Secure**: Local configuration with sensitive data kept private
@@ -88,10 +88,12 @@ python run_bot.py
 Once the bot is running, you can use these commands in Telegram:
 
 - `/start` - Welcome message and bot status
-- `/check` - Manually check for available slots (2-week navigation)
-- `/check_month` - Manually check for available slots (1-month navigation)
-- `/check force` or `/check -f` - Force a fresh check, ignoring the cache
-- `/check all` or `/check -a` - Show all available slots (not just relevant ones)
+- `/check` - Check slots (2-week navigation; Tokyo by default)
+- `/check kanagawa` - Kanagawa calendar
+- `/check samezu` or `/check fuchu` - Tokyo, one facility
+- `/check_month` - Same as `/check` but 1-month navigation
+- `/check force` - Force a fresh scrape (ignore cache)
+- `/check all` - Show all slot types for the selected source
 - `/status` - Check bot status and last check time
 - `/cache` - Show detailed cache information and timestamp
 - `/link` - Get the reservation system website
@@ -99,13 +101,14 @@ Once the bot is running, you can use these commands in Telegram:
 
 ### Subscription Options
 
-The bot supports different subscription types:
+Subscribers are stored in `subscribers.txt` as `chat_id|username|sources|type`.
 
-- `/subscribe` - Subscribe to relevant slots only (住民票のある方)
-- `/subscribe all` - Subscribe to ALL available slots (both types)
-- `/subscribe nai` - Subscribe to 住民票のない方 slots only
-- `/subscribe ari` - Subscribe to 住民票のある方 slots only
-- `/unsubscribe` - Unsubscribe from notifications
+- `/subscribe` — All Tokyo sources, relevant slot types (住民票のある方)
+- `/subscribe kanagawa` — Kanagawa only (普通車ＡＭ/ＰＭ)
+- `/subscribe samezu fuchu` — Tokyo facilities
+- `/subscribe nai` / `ari` / `am` / `pm` — Slot-type filters
+- `/subscribe all` — All sources, all slot types
+- `/unsubscribe` — Remove subscription
 
 ### Automatic Checking
 
@@ -197,21 +200,13 @@ Check `bot.log` and `reservation_checker.log` for detailed error messages and de
 
 ```
 samezu_bot/
-├── run_bot.py              # Main bot script
-├── reservation_checker.py   # Web scraping logic
-├── config_template.py       # Configuration template
-├── config.py               # Local configuration (not in Git)
-├── requirements.txt         # Python dependencies
-├── README.md              # This file
-├── .gitignore             # Git ignore rules
-├── venv/                  # Virtual environment
-├── bot.log                # Bot logs
-├── reservation_checker.log # Scraper logs
-├── subscribers.txt        # User subscriptions
-└── tests/                 # Test suite
-    ├── test_commands.py   # Command tests
-    ├── test_bot.py       # Bot tests
-    └── test_async.py     # Async tests
+├── run_bot.py                      # Telegram bot, scheduler, cache, notifications
+├── reservation_checker_playwright.py  # Playwright scraper (production)
+├── config_template.py              # Defaults; override in config.py
+├── scripts/deploy.sh               # VPS deploy (pytest + restart)
+├── tests/                          # Regression suite (pytest)
+├── pytest.ini
+└── subscribers.txt                 # Local subscriber store (gitignored)
 ```
 
 ## Built With
@@ -220,6 +215,23 @@ samezu_bot/
 - **Playwright** - Web automation and scraping
 - **python-telegram-bot** - Telegram bot API integration
 - **asyncio** - Asynchronous programming
+
+## Testing
+
+```bash
+source venv/bin/activate
+pytest -q          # tests/ only (see pytest.ini)
+```
+
+## Deployment (VPS)
+
+Production runs on a VPS under systemd. Do not run `python run_bot.py` locally while the VPS bot is active (competing Telegram updates).
+
+```bash
+./scripts/deploy.sh   # git pull, pytest on server, systemctl restart
+```
+
+See `CLAUDE.md` for SSH host, logs, and architecture notes.
 
 ## Development
 
