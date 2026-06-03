@@ -225,48 +225,55 @@ class SamezuBot:
                 pass
             logger.info("🛑 Automatic checking scheduler stopped")
 
+    async def _run_scheduled_checks(self):
+        """Run Tokyo + Kanagawa scheduled scrapes and update caches."""
+        logger.info("🔄 Running scheduled check...")
+
+        if self.check_lock.locked():
+            logger.info("⏭️ Skipping scheduled check — scrape already in progress")
+            return
+
+        async with self.check_lock:
+            await self._run_scheduled_check(
+                checker=self.reservation_checker,
+                cache=self.cache,
+                source="tokyo",
+            )
+            await self._drain_waiting_queues_after_scrape("tokyo")
+
+            await self._run_scheduled_check(
+                checker=self.kanagawa_checker,
+                cache=self.kanagawa_cache,
+                source="kanagawa",
+            )
+            await self._drain_waiting_queues_after_scrape("kanagawa")
+
+        await self._start_chained_scrapes_for_remaining_waiters()
+        logger.info("✅ Scheduled check completed")
+
     async def _scheduler_loop(self):
-        """Background loop that checks for slots every CHECK_INTERVAL seconds"""
+        """Background loop: scrape on start, then every CHECK_INTERVAL seconds."""
         logger.info(f"⏰ Starting scheduler loop with {CHECK_INTERVAL} second intervals")
 
         while True:
             try:
+                await self._run_scheduled_checks()
                 await asyncio.sleep(CHECK_INTERVAL)
-                logger.info("🔄 Running scheduled check...")
-
-                if self.check_lock.locked():
-                    logger.info("⏭️ Skipping scheduled check — scrape already in progress")
-                    continue
-
-                async with self.check_lock:
-                    await self._run_scheduled_check(
-                        checker=self.reservation_checker,
-                        cache=self.cache,
-                        source="tokyo",
-                    )
-                    await self._drain_waiting_queues_after_scrape("tokyo")
-
-                    await self._run_scheduled_check(
-                        checker=self.kanagawa_checker,
-                        cache=self.kanagawa_cache,
-                        source="kanagawa",
-                    )
-                    await self._drain_waiting_queues_after_scrape("kanagawa")
-
-                await self._start_chained_scrapes_for_remaining_waiters()
-
-                logger.info("✅ Scheduled check completed")
-
             except asyncio.CancelledError:
                 logger.info("🛑 Scheduler loop cancelled")
                 break
             except Exception as e:
                 logger.error(f"❌ Error in scheduled check: {e}")
-                continue
+                await asyncio.sleep(CHECK_INTERVAL)
 
     async def _run_scheduled_check(self, checker, cache, source):
         """Run one checker, update its cache, notify relevant subscribers."""
-        result = await checker.run_check(send_notifications=False, show_all=True)
+        try:
+            result = await checker.run_check(send_notifications=False, show_all=True)
+        except Exception as e:
+            logger.error(f"❌ Scheduled check failed for {source}: {e}")
+            result = f"❌ Error during reservation check: {e}"
+
         self._update_cache_after_scrape(cache, result, use_month_navigation=False)
 
         filtered_result = self._filter_result_by_slot_types(result, list(checker.target_slot_types))
@@ -693,11 +700,15 @@ class SamezuBot:
         check_in_progress = self.check_lock.locked()
 
         def cache_line(label, cache):
-            if cache['result'] and cache['timestamp']:
-                elapsed = time.time() - cache['timestamp']
-                if elapsed < cache['cache_duration']:
-                    return f"✅ {label}: valid ({int(elapsed // 60)}m {int(elapsed % 60)}s old)"
-            return f"❌ {label}: empty or expired"
+            if not cache.get('timestamp'):
+                return f"⏳ {label}: no scrape yet (scheduler runs on start, then every {CHECK_INTERVAL // 60}m)"
+            if not cache.get('result'):
+                return f"❌ {label}: empty result"
+            elapsed = time.time() - cache['timestamp']
+            age = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
+            if elapsed < cache['cache_duration']:
+                return f"✅ {label}: valid ({age} old)"
+            return f"❌ {label}: expired ({age} old)"
 
         status = "⏳ Check in progress" if check_in_progress else "🟢 Ready"
         msg = (

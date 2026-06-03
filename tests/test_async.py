@@ -40,7 +40,7 @@ async def _run_one_scheduler_iteration(bot, run_check_result):
     async def fast_sleep(_):
         nonlocal call_count
         call_count += 1
-        if call_count >= 2:
+        if call_count >= 1:
             raise asyncio.CancelledError()
 
     async def fake_run_check(*args, **kwargs):
@@ -63,6 +63,15 @@ async def _run_one_scheduler_iteration(bot, run_check_result):
             pass
 
     return notifications_sent
+
+
+@pytest.mark.asyncio
+async def test_scheduler_populates_cache_before_first_sleep():
+    bot = SamezuBot()
+    await _run_one_scheduler_iteration(bot, "❌ No slots")
+    assert bot.cache['result'] == "❌ No slots"
+    assert bot.cache['timestamp'] is not None
+    assert bot.kanagawa_cache['result'] == "❌ No slots"
 
 
 @pytest.mark.asyncio

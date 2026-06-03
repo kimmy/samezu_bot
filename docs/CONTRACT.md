@@ -41,6 +41,11 @@ Each checker instance has its own `target_url`, `target_facilities`, `target_slo
 - Metadata: `use_month_navigation` must match for cache hits (`/check` vs `/check_month`).
 - TTL: `CACHE_DURATION` (default 120s).
 
+## Scheduler
+
+- On bot start, runs Tokyo + Kanagawa scrapes **immediately**, then every `CHECK_INTERVAL` seconds (default 300).
+- Updates both caches even when the result is `❌ No slots` or an error string.
+
 ## Notifications
 
 - Scheduler runs checks with `send_notifications=False` on the scraper.
