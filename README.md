@@ -114,7 +114,7 @@ source venv/bin/activate
 pytest -q    # tests/ only (pytest.ini); 100+ hermetic tests, no live network
 ```
 
-Manual probes belong in `scripts/` or local-only files (see `.gitignore`). Parser samples live under `tests/fixtures/`.
+Manual probes belong in `scripts/` or local-only files (see `.gitignore`). Calendar HTML samples live under `tests/fixtures/` (refresh with `scripts/capture_calendar_fixture.py`).
 
 ## Deployment (VPS)
 

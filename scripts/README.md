@@ -32,3 +32,12 @@ For live Playwright debugging from repo root:
 ```bash
 python reservation_checker_playwright.py
 ```
+
+## `capture_calendar_fixture.py`
+
+Save the live reservation table HTML into `tests/fixtures/` (for parser tests):
+
+```bash
+python scripts/capture_calendar_fixture.py kanagawa
+python scripts/capture_calendar_fixture.py tokyo
+```
