@@ -16,7 +16,7 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from app_logging import configure_logging
+from app_logging import BOT_LOGGER_NAME, configure_logging
 
 # Import all template values as defaults
 from config_template import *
@@ -35,7 +35,7 @@ configure_logging()
 
 from reservation_checker_playwright import ReservationChecker
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(BOT_LOGGER_NAME)
 
 class SamezuBot:
     SUBSCRIBERS_FILE = 'subscribers.txt'

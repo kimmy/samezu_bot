@@ -30,7 +30,7 @@ except ImportError:
 DATE_MD_PATTERN = re.compile(r'\d{1,2}/\d{1,2}')
 FULL_DATE_PATTERN = re.compile(r'(\d{4})年(\d{2})月(\d{2})日')
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('reservation_checker_playwright')
 
 class ReservationChecker:
     def __init__(self, target_url=None, target_facilities=None, target_slot_types=None, source_name="tokyo"):

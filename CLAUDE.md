@@ -96,6 +96,8 @@ Each has its own cache dict (`self.cache` / `self.kanagawa_cache`). The schedule
 
 Configured by `app_logging.configure_logging()` before the scraper import:
 
-- **Console (stderr)** — all loggers via root
-- **`bot.log`** — logger `run_bot` only (Telegram bot, scheduler, cache)
-- **`reservation_checker.log`** — loggers `reservation_checker_playwright` and `reservation_checker_requests` (scraping only)
+- **Console (stderr)** — all loggers via root propagation
+- **`bot.log`** — logger `run_bot` (used by `run_bot.py`; production entry is `python run_bot.py`)
+- **`reservation_checker.log`** — loggers `reservation_checker_playwright` and `reservation_checker_requests`
+
+When a scraper file is run as `python script.py`, logger `__main__` is also routed to the matching log file via `sys.argv[0]`.

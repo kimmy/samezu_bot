@@ -187,7 +187,13 @@ The bot will continue running even if you lock your laptop, but it will stop if 
 
 ### Logs
 
-Check `bot.log` and `reservation_checker.log` for detailed error messages and debugging information.
+After `python run_bot.py` (production entrypoint):
+
+- **`bot.log`** — bot/scheduler (`run_bot` logger)
+- **`reservation_checker.log`** — Playwright scraper only
+- **stderr** — same records via journalctl when using systemd
+
+See `docs/OPERATIONAL_RISKS.md` for debugging missed alerts.
 
 ## Security
 
