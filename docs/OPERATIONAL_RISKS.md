@@ -16,7 +16,7 @@ Known gaps between “tests pass” and “production stays correct on the live 
 
 | Risk | Mitigation |
 |------|------------|
-| **Standalone scraper notifies everyone** | `run_check(send_notifications=True)` requires `ALLOW_STANDALONE_NOTIFY=1`; default is off. `python reservation_checker_playwright.py` prints results only. |
+| **Standalone scraper notifies everyone** | Playwright and `scripts/reservation_checker_requests.py`: `send_notifications=True` requires `ALLOW_STANDALONE_NOTIFY=1`; CLI defaults print only. |
 | **Two bot instances** | Never run local `run_bot.py` while VPS systemd service is polling the same token. |
 
 Production notifications must go through `run_bot.py` so source, facility, and subscription-type filters apply.

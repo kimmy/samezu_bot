@@ -94,5 +94,8 @@ Each has its own cache dict (`self.cache` / `self.kanagawa_cache`). The schedule
 
 ## Logs
 
-- `bot.log` — Telegram bot events
-- `reservation_checker.log` — Scraper events (page navigation, slot detection)
+Configured by `app_logging.configure_logging()` before the scraper import:
+
+- **Console (stderr)** — all loggers via root
+- **`bot.log`** — logger `run_bot` only (Telegram bot, scheduler, cache)
+- **`reservation_checker.log`** — loggers `reservation_checker_playwright` and `reservation_checker_requests` (scraping only)

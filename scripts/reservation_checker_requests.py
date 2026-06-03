@@ -7,6 +7,9 @@ Lightweight alternative to the Playwright version - no browser required.
 
 import asyncio
 import logging
+import os
+import sys
+from pathlib import Path
 from typing import List, Dict
 import requests
 from bs4 import BeautifulSoup
@@ -22,15 +25,7 @@ try:
 except ImportError:
     pass
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('reservation_checker.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('reservation_checker_requests')
 
 BASE_URL = "https://www.keishicho-gto.metro.tokyo.lg.jp"
 NAV_URL_TEMPLATE = BASE_URL + "/keishicho-u/reserve/facilitySelect_dateTrans?movePage={move}"
@@ -202,6 +197,7 @@ class ReservationChecker:
         return all_slots
 
     async def send_telegram_message(self, message: str):
+        """Legacy broadcast to subscribers.txt. Production must use run_bot.py."""
         """Send message to all subscribed users."""
         try:
             with open('subscribers.txt', 'r') as f:
@@ -232,7 +228,7 @@ class ReservationChecker:
             except Exception as e:
                 logger.error(f"Failed to send to {chat_id}: {e}")
 
-    async def run_check(self, send_notifications=True, use_month_navigation=False, show_all=False):
+    async def run_check(self, send_notifications=False, use_month_navigation=False, show_all=False):
         """Main method to run the reservation check."""
         logger.info("Starting reservation check...")
 
@@ -254,9 +250,20 @@ class ReservationChecker:
 
             if slots:
                 filter_applicants = not show_all
-                result = await self.process_available_slots(slots, send_notifications, filter_applicants=filter_applicants)
+                result = await self.process_available_slots(
+                    slots, send_notifications=False, filter_applicants=filter_applicants
+                )
                 if send_notifications:
-                    await self.send_telegram_message(result)
+                    if os.environ.get("ALLOW_STANDALONE_NOTIFY") == "1":
+                        logger.warning(
+                            "Sending via requests scraper (bypasses run_bot filters). Debug only."
+                        )
+                        await self.send_telegram_message(result)
+                    else:
+                        logger.warning(
+                            "send_notifications=True ignored. Use run_bot.py, or set "
+                            "ALLOW_STANDALONE_NOTIFY=1 to force legacy broadcast."
+                        )
                 return result
             else:
                 logger.info("No available slots found")
@@ -305,9 +312,16 @@ class ReservationChecker:
 
 
 async def main():
+    repo_root = Path(__file__).resolve().parent.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from app_logging import configure_logging
+
+    configure_logging()
     checker = ReservationChecker()
-    await checker.run_check()
+    result = await checker.run_check(send_notifications=False)
+    print(result)
+
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
