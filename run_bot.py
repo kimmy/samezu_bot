@@ -6,9 +6,12 @@ Samezu Bot - Telegram bot for checking driving test reservations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
+import tempfile
 import time
+from collections import defaultdict
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -40,6 +43,8 @@ logger = logging.getLogger(__name__)
 
 class SamezuBot:
     SUBSCRIBERS_FILE = 'subscribers.txt'
+    TOKYO_SUBSCRIBER_SOURCES = frozenset({"samezu", "fuchu"})
+    SOURCE_FACILITY_MAP = {"samezu": "鮫洲試験場", "fuchu": "府中試験場"}
 
     def __init__(self):
         """Initialize the bot with configuration and state management."""
@@ -47,8 +52,11 @@ class SamezuBot:
 
         # Initialize state management
         self.subscribers = set()
-        self.waiting_users = set()  # (user_id, chat_id) tuples
+        # scrape_key -> {(user_id, chat_id, check_source, show_all, use_month_navigation, force_check), ...}
+        self.waiting_users = defaultdict(set)
         self.check_lock = asyncio.Lock()
+        self._check_schedule_lock = asyncio.Lock()
+        self._scrape_task_scheduled = False
         self.scheduler_task = None  # Background scheduler task
 
         # Single cache for unfiltered results only
@@ -115,34 +123,68 @@ class SamezuBot:
         return time.time() - self.cache['timestamp']
 
     # Subscriber management methods
-    def add_subscriber(self, chat_id, user_info=None):
-        """Add a chat_id to the subscribers file if not already present."""
+    def _read_subscriber_lines(self):
         try:
-            with open(self.SUBSCRIBERS_FILE, 'a+') as f:
-                # Store user info for tagging
-                if user_info:
-                    user_line = f"{chat_id}|{user_info}\n"
-                else:
-                    user_line = f"{chat_id}\n"
-                f.write(user_line)
-                logger.info(f"Added new subscriber: {chat_id}")
+            with open(self.SUBSCRIBERS_FILE, 'r') as f:
+                return f.readlines()
+        except FileNotFoundError:
+            return []
+
+    def _write_subscriber_lines(self, lines):
+        """Atomically replace subscribers file contents."""
+        target = os.path.abspath(self.SUBSCRIBERS_FILE)
+        directory = os.path.dirname(target) or '.'
+        fd, temp_path = tempfile.mkstemp(dir=directory, prefix='.subscribers_', text=True)
+        try:
+            with os.fdopen(fd, 'w') as f:
+                f.writelines(lines)
+            os.replace(temp_path, target)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
+
+    def _subscriber_line_for_chat_id(self, line, chat_id_str):
+        stripped = line.strip()
+        if not stripped:
+            return False
+        return stripped.startswith(f"{chat_id_str}|") or stripped == chat_id_str
+
+    def upsert_subscriber(self, chat_id, user_info=None):
+        """Insert or replace a subscriber row for chat_id."""
+        chat_id_str = str(chat_id)
+        try:
+            kept = [
+                line if line.endswith('\n') else line + '\n'
+                for line in self._read_subscriber_lines()
+                if not self._subscriber_line_for_chat_id(line, chat_id_str)
+            ]
+            if user_info:
+                kept.append(f"{chat_id_str}|{user_info}\n")
+            else:
+                kept.append(f"{chat_id_str}\n")
+            self._write_subscriber_lines(kept)
+            logger.info(f"Upserted subscriber: {chat_id}")
         except Exception as e:
-            logger.error(f"Failed to add subscriber: {e}")
+            logger.error(f"Failed to upsert subscriber: {e}")
+
+    def add_subscriber(self, chat_id, user_info=None):
+        """Add or update a subscriber (alias for upsert_subscriber)."""
+        self.upsert_subscriber(chat_id, user_info)
 
     def remove_subscriber(self, chat_id):
         """Remove a chat_id from the subscribers file if present."""
+        chat_id_str = str(chat_id)
         try:
-            with open(self.SUBSCRIBERS_FILE, 'r') as f:
-                lines = f.readlines()
-
-            with open(self.SUBSCRIBERS_FILE, 'w') as f:
-                for line in lines:
-                    if not line.strip().startswith(f"{chat_id}|") and line.strip() != str(chat_id):
-                        f.write(line)
-
+            kept = [
+                line if line.endswith('\n') else line + '\n'
+                for line in self._read_subscriber_lines()
+                if not self._subscriber_line_for_chat_id(line, chat_id_str)
+            ]
+            self._write_subscriber_lines(kept)
             logger.info(f"Removed subscriber: {chat_id}")
-        except FileNotFoundError:
-            pass
         except Exception as e:
             logger.error(f"Failed to remove subscriber: {e}")
 
@@ -219,16 +261,26 @@ class SamezuBot:
                 await asyncio.sleep(CHECK_INTERVAL)
                 logger.info("🔄 Running scheduled check...")
 
-                await self._run_scheduled_check(
-                    checker=self.reservation_checker,
-                    cache=self.cache,
-                    source="tokyo",
-                )
-                await self._run_scheduled_check(
-                    checker=self.kanagawa_checker,
-                    cache=self.kanagawa_cache,
-                    source="kanagawa",
-                )
+                if self.check_lock.locked():
+                    logger.info("⏭️ Skipping scheduled check — scrape already in progress")
+                    continue
+
+                async with self.check_lock:
+                    await self._run_scheduled_check(
+                        checker=self.reservation_checker,
+                        cache=self.cache,
+                        source="tokyo",
+                    )
+                    await self._drain_waiting_queues_after_scrape("tokyo")
+
+                    await self._run_scheduled_check(
+                        checker=self.kanagawa_checker,
+                        cache=self.kanagawa_cache,
+                        source="kanagawa",
+                    )
+                    await self._drain_waiting_queues_after_scrape("kanagawa")
+
+                await self._start_chained_scrapes_for_remaining_waiters()
 
                 logger.info("✅ Scheduled check completed")
 
@@ -242,8 +294,7 @@ class SamezuBot:
     async def _run_scheduled_check(self, checker, cache, source):
         """Run one checker, update its cache, notify relevant subscribers."""
         result = await checker.run_check(send_notifications=False, show_all=True)
-        cache['result'] = result
-        cache['timestamp'] = time.time()
+        self._update_cache_after_scrape(cache, result, use_month_navigation=False)
 
         filtered_result = self._filter_result_by_slot_types(result, list(checker.target_slot_types))
         if "🎉" not in filtered_result:
@@ -327,18 +378,10 @@ class SamezuBot:
             elif arg == "pm":
                 subscription_type = "pm"
 
-        subscribers = self.get_subscribers()
-        existing_ids = [sub[0] for sub in subscribers]
-
-        if str(chat_id) in existing_ids:
-            await update.message.reply_text(
-                "ℹ️ You are already subscribed. Use /unsubscribe first to change your subscription.",
-                parse_mode='HTML'
-            )
-            return
-
         sources_str = ",".join(sources)
-        self.add_subscriber(chat_id, f"{username}|{sources_str}|{subscription_type}")
+        user_info = f"{username}|{sources_str}|{subscription_type}"
+        was_subscribed = str(chat_id) in [sub[0] for sub in self.get_subscribers()]
+        self.upsert_subscriber(chat_id, user_info)
 
         sources_display = ", ".join(sources)
         is_kanagawa_only = sources == ["kanagawa"]
@@ -351,8 +394,9 @@ class SamezuBot:
             "relevant": "普通車ＡＭ &amp; ＰＭ (Kanagawa)" if is_kanagawa_only else "住民票のある方 (Tokyo)",
         }[subscription_type]
 
+        action = "Updated" if was_subscribed else "Subscribed"
         response = (
-            f"✅ Subscribed!\n\n"
+            f"✅ {action}!\n\n"
             f"👤 Tagged as: {username}\n"
             f"📍 Sources: <b>{sources_display}</b>\n"
             f"📋 Slot type: <b>{type_display}</b>"
@@ -391,17 +435,29 @@ class SamezuBot:
 
         checker = self.kanagawa_checker if source == "kanagawa" else self.reservation_checker
         cache = self.kanagawa_cache if source == "kanagawa" else self.cache
-        if await self._handle_cached_result(update, user_name, user_id, force_check, show_all, cache=cache, checker=checker):
+        if await self._handle_cached_result(
+            update, user_name, user_id, force_check, show_all, cache=cache, checker=checker,
+            check_source=source, use_month_navigation=False,
+        ):
             return
 
-        self.waiting_users.add((user_id, update.effective_chat.id))
+        scrape_key = self._scrape_key_for_check(source)
+        self._enqueue_waiting_user(
+            scrape_key, user_id, update.effective_chat.id, source, show_all,
+            use_month_navigation=False, force_check=force_check,
+        )
 
-        if self.check_lock.locked():
-            logger.info(f"User {user_name} ({user_id}) queued for result.")
+        if not await self._reserve_and_start_background_check(
+            context, use_month_navigation=False, show_all=show_all, source=source, scrape_key=scrape_key
+        ):
+            logger.info(f"User {user_name} ({user_id}) queued for {scrape_key} result.")
+            await update.message.reply_text(
+                "⏳ A check is already running. You'll receive the result here when it finishes.",
+                parse_mode='HTML',
+            )
             return
 
         logger.info(f"User {user_name} ({user_id}) starting background check task.")
-        asyncio.create_task(self._background_check_task(context, use_month_navigation=False, show_all=show_all, source=source))
 
     async def check_month_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /check_month command - check using month navigation."""
@@ -417,75 +473,212 @@ class SamezuBot:
 
         checker = self.kanagawa_checker if source == "kanagawa" else self.reservation_checker
         cache = self.kanagawa_cache if source == "kanagawa" else self.cache
-        if await self._handle_cached_result(update, user_name, user_id, force_check, show_all, cache=cache, checker=checker):
+        if await self._handle_cached_result(
+            update, user_name, user_id, force_check, show_all, cache=cache, checker=checker,
+            check_source=source, use_month_navigation=True,
+        ):
             return
 
-        self.waiting_users.add((user_id, update.effective_chat.id))
+        scrape_key = self._scrape_key_for_check(source)
+        self._enqueue_waiting_user(
+            scrape_key, user_id, update.effective_chat.id, source, show_all,
+            use_month_navigation=True, force_check=force_check,
+        )
 
-        if self.check_lock.locked():
-            logger.info(f"User {user_name} ({user_id}) queued for result.")
+        if not await self._reserve_and_start_background_check(
+            context, use_month_navigation=True, show_all=show_all, source=source, scrape_key=scrape_key
+        ):
+            logger.info(f"User {user_name} ({user_id}) queued for {scrape_key} result.")
+            await update.message.reply_text(
+                "⏳ A check is already running. You'll receive the result here when it finishes.",
+                parse_mode='HTML',
+            )
             return
 
         logger.info(f"User {user_name} ({user_id}) starting background check task with month navigation.")
-        asyncio.create_task(self._background_check_task(context, use_month_navigation=True, show_all=show_all, source=source))
 
-    async def _background_check_task(self, context, use_month_navigation=False, show_all=False, source=None):
+    async def _reserve_and_start_background_check(
+        self, context, use_month_navigation, show_all, source, scrape_key
+    ):
+        """Atomically reserve a single background scrape slot and start the task."""
+        async with self._check_schedule_lock:
+            if self.check_lock.locked() or self._scrape_task_scheduled:
+                return False
+            self._scrape_task_scheduled = True
+
+        asyncio.create_task(
+            self._background_check_task(
+                context,
+                use_month_navigation=use_month_navigation,
+                show_all=show_all,
+                source=source,
+                scrape_key=scrape_key,
+            )
+        )
+        return True
+
+    async def _telegram_send(self, chat_id, text, parse_mode='HTML'):
+        """Send a Telegram message (overridable in tests)."""
+        await self.application.bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+
+    def _scrape_key_for_check(self, check_source):
+        """Map /check source arg to cache/checker bucket."""
+        if check_source == "kanagawa":
+            return "kanagawa"
+        return "tokyo"
+
+    def _checker_and_cache_for_scrape_key(self, scrape_key):
+        if scrape_key == "kanagawa":
+            return self.kanagawa_checker, self.kanagawa_cache
+        return self.reservation_checker, self.cache
+
+    def _update_cache_after_scrape(self, cache, result, use_month_navigation):
+        cache['result'] = result
+        cache['timestamp'] = time.time()
+        cache['use_month_navigation'] = use_month_navigation
+
+    def _is_cache_valid(self, cache):
+        if not cache.get('result') or not cache.get('timestamp'):
+            return False
+        elapsed = time.time() - cache['timestamp']
+        return elapsed < cache.get('cache_duration', CACHE_DURATION)
+
+    def _cache_usable_for_waiter(self, cache, waiter, from_fresh_scrape):
+        """Whether a queued request can be answered from cache without a new scrape."""
+        _user_id, _chat_id, _check_source, _show_all, use_month, force = waiter
+
+        if not cache.get('result'):
+            return False
+
+        if use_month != cache.get('use_month_navigation', False):
+            return False
+
+        if force:
+            return from_fresh_scrape
+
+        if not from_fresh_scrape and not self._is_cache_valid(cache):
+            return False
+
+        return True
+
+    def _enqueue_waiting_user(
+        self, scrape_key, user_id, chat_id, check_source, show_all, use_month_navigation, force_check
+    ):
+        self.waiting_users[scrape_key].add(
+            (user_id, chat_id, check_source, show_all, use_month_navigation, force_check)
+        )
+
+    async def _deliver_to_waiting_users(self, scrape_key, from_fresh_scrape=False):
+        """Send cached scrape results to waiters whose request matches the cache."""
+        waiters = self.waiting_users.pop(scrape_key, None)
+        if not waiters:
+            return
+
+        checker, cache = self._checker_and_cache_for_scrape_key(scrape_key)
+        tasks = []
+        still_waiting = set()
+        delivered = 0
+
+        for waiter in waiters:
+            if not self._cache_usable_for_waiter(cache, waiter, from_fresh_scrape):
+                still_waiting.add(waiter)
+                continue
+
+            _user_id, chat_id, check_source, show_all, _use_month, _force = waiter
+            result_to_send = self._apply_check_filters(
+                cache['result'], checker, show_all, check_source
+            )
+            tasks.append(self._telegram_send(chat_id, result_to_send))
+            delivered += 1
+
+        if still_waiting:
+            self.waiting_users[scrape_key] |= still_waiting
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if delivered:
+            logger.info(f"Sent result to {delivered} waiting users for {scrape_key}")
+        if still_waiting:
+            logger.info(
+                f"{len(still_waiting)} waiter(s) for {scrape_key} need a matching scrape "
+                f"(month={cache.get('use_month_navigation')}, fresh_only={not from_fresh_scrape})"
+            )
+
+    async def _deliver_cached_waiters_for_other_keys(self, completed_scrape_key):
+        """Serve waiters on other scrape keys from valid, matching caches only."""
+        for scrape_key in list(self.waiting_users.keys()):
+            if scrape_key != completed_scrape_key:
+                await self._deliver_to_waiting_users(scrape_key, from_fresh_scrape=False)
+
+    async def _drain_waiting_queues_after_scrape(self, completed_scrape_key):
+        """Deliver waiters compatible with the scrape that just finished, then try other caches."""
+        await self._deliver_to_waiting_users(completed_scrape_key, from_fresh_scrape=True)
+        await self._deliver_cached_waiters_for_other_keys(completed_scrape_key)
+
+    async def _start_chained_scrapes_for_remaining_waiters(self):
+        """Start one background scrape for the next scrape key that still has waiters."""
+        for scrape_key in list(self.waiting_users.keys()):
+            waiters = self.waiting_users.get(scrape_key)
+            if not waiters:
+                continue
+
+            use_month_navigation = any(w[4] for w in waiters)
+            show_all = any(w[3] for w in waiters)
+            check_source = next(iter(waiters))[2]
+
+            if await self._reserve_and_start_background_check(
+                None,
+                use_month_navigation=use_month_navigation,
+                show_all=show_all,
+                source=check_source,
+                scrape_key=scrape_key,
+            ):
+                logger.info(f"Chaining background check for {scrape_key} ({len(waiters)} waiter(s))")
+            return
+
+    async def _background_check_task(
+        self, context, use_month_navigation=False, show_all=False, source=None, scrape_key=None
+    ):
         """Background task to perform reservation check and notify users."""
-        async with self.check_lock:
-            try:
-                logger.info(f"Starting background check task. use_month_navigation={use_month_navigation}, show_all={show_all}, source={source}")
+        if scrape_key is None:
+            scrape_key = self._scrape_key_for_check(source)
 
-                checker = self.kanagawa_checker if source == "kanagawa" else self.reservation_checker
-                cache = self.kanagawa_cache if source == "kanagawa" else self.cache
+        try:
+            async with self.check_lock:
+                try:
+                    logger.info(
+                        f"Starting background check task. scrape_key={scrape_key}, "
+                        f"use_month_navigation={use_month_navigation}, show_all={show_all}, source={source}"
+                    )
 
-                result = await checker.run_check(
-                    send_notifications=False,
-                    use_month_navigation=use_month_navigation,
-                    show_all=True
-                )
+                    checker, cache = self._checker_and_cache_for_scrape_key(scrape_key)
 
-                cache['result'] = result
-                cache['timestamp'] = time.time()
+                    result = await checker.run_check(
+                        send_notifications=False,
+                        use_month_navigation=use_month_navigation,
+                        show_all=True
+                    )
 
-                if not show_all:
-                    result_to_send = self._filter_result_by_slot_types(result, list(checker.target_slot_types))
-                else:
-                    result_to_send = result
+                    self._update_cache_after_scrape(cache, result, use_month_navigation)
 
-                # Send result to all waiting users in parallel
-                if self.waiting_users:
-                    tasks = []
-                    for user_id, chat_id in self.waiting_users:
-                        task = context.bot.send_message(
-                            chat_id=chat_id,
-                            text=result_to_send,
-                            parse_mode='HTML'
-                        )
-                        tasks.append(task)
+                    await self._drain_waiting_queues_after_scrape(scrape_key)
 
-                    # Send all messages in parallel
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                except Exception as e:
+                    error_message = f"❌ Error during reservation check: {str(e)}"
+                    logger.error(f"Background check task failed: {e}")
 
-                    logger.info(f"Sent result to {len(self.waiting_users)} waiting users")
-                    self.waiting_users.clear()
+                    waiters = self.waiting_users.pop(scrape_key, None)
+                    if waiters:
+                        tasks = [
+                            self._telegram_send(chat_id, error_message)
+                            for _user_id, chat_id, _check_source, _show_all, _use_month, _force in waiters
+                        ]
+                        await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            async with self._check_schedule_lock:
+                self._scrape_task_scheduled = False
 
-            except Exception as e:
-                error_message = f"❌ Error during reservation check: {str(e)}"
-                logger.error(f"Background check task failed: {e}")
-
-                # Send error to all waiting users
-                if self.waiting_users:
-                    tasks = []
-                    for user_id, chat_id in self.waiting_users:
-                        task = context.bot.send_message(
-                            chat_id=chat_id,
-                            text=error_message,
-                            parse_mode='HTML'
-                        )
-                        tasks.append(task)
-
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                    self.waiting_users.clear()
+        await self._start_chained_scrapes_for_remaining_waiters()
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
@@ -576,6 +769,113 @@ class SamezuBot:
         )
         await update.message.reply_text(link_message, parse_mode='HTML')
 
+    def _subscriber_matches_source(self, subscriber_sources, notify_source):
+        """Whether a subscriber should receive alerts for a scrape source."""
+        if not notify_source:
+            return True
+        if notify_source == "kanagawa":
+            return "kanagawa" in subscriber_sources
+        if notify_source == "tokyo":
+            return bool(set(subscriber_sources) & self.TOKYO_SUBSCRIBER_SOURCES)
+        return notify_source in subscriber_sources
+
+    def _facilities_for_subscriber_sources(self, subscriber_sources):
+        """Facility names to keep in Tokyo alerts for this subscriber (None = both)."""
+        tokyo_keys = [s for s in subscriber_sources if s in self.TOKYO_SUBSCRIBER_SOURCES]
+        if len(tokyo_keys) >= 2:
+            return None
+        if len(tokyo_keys) == 1:
+            return [self.SOURCE_FACILITY_MAP[tokyo_keys[0]]]
+        return []
+
+    def _facilities_for_check_source(self, check_source):
+        """Facility filter for /check when source is samezu or fuchu (None = no extra filter)."""
+        if check_source in self.SOURCE_FACILITY_MAP:
+            return [self.SOURCE_FACILITY_MAP[check_source]]
+        return None
+
+    def _apply_check_filters(self, result, checker, show_all, check_source):
+        """Apply slot-type and optional facility filters for manual /check replies."""
+        if not show_all:
+            result = self._filter_result_by_slot_types(result, list(checker.target_slot_types))
+        facilities = self._facilities_for_check_source(check_source)
+        if facilities is not None:
+            result = self._filter_result_by_facilities(result, facilities)
+        return result
+
+    def _filter_result_by_facilities(self, result, keep_facilities):
+        """Filter a formatted result to only include matching facility blocks."""
+        if keep_facilities is None:
+            return result
+        if "❌ No slots" in result or "❌ Error" in result:
+            return result
+
+        if not any(f in result for f in keep_facilities):
+            return f"❌ No slots found for {', '.join(keep_facilities)}"
+
+        lines = result.split('\n')
+        filtered_lines = []
+        in_slot_section = False
+        has_relevant_facility = False
+        current_facility_kept = False
+        pending_date_line = None
+
+        for line in lines:
+            if any(
+                h in line
+                for h in [
+                    "🎉 Available Reservation Slots Found!",
+                    "📍",
+                    "To book, click",
+                    "🔗",
+                ]
+            ):
+                filtered_lines.append(line)
+                continue
+            if "📅 <b>" in line and "</b>" in line:
+                pending_date_line = line
+                in_slot_section = True
+                has_relevant_facility = False
+                current_facility_kept = False
+                continue
+            if "🏢 <b>" in line and "</b>" in line:
+                current_facility_kept = any(f in line for f in keep_facilities)
+                if current_facility_kept:
+                    if pending_date_line is not None:
+                        filtered_lines.append(pending_date_line)
+                        pending_date_line = None
+                    filtered_lines.append(line)
+                    has_relevant_facility = True
+                continue
+            if "• " in line:
+                if current_facility_kept:
+                    filtered_lines.append(line)
+                continue
+            if line.strip() == "" and in_slot_section:
+                if has_relevant_facility:
+                    if pending_date_line is not None:
+                        filtered_lines.append(pending_date_line)
+                        pending_date_line = None
+                    filtered_lines.append(line)
+                else:
+                    pending_date_line = None
+                in_slot_section = False
+                continue
+            if not in_slot_section or has_relevant_facility:
+                filtered_lines.append(line)
+
+        filtered_result = '\n'.join(filtered_lines)
+        if not any(f in filtered_result for f in keep_facilities):
+            return f"❌ No slots found for {', '.join(keep_facilities)}"
+
+        summary_lines = []
+        for line in filtered_result.split('\n'):
+            if "📍" in line and "Facilities" in line:
+                summary_lines.append(f"📍 <b>Facilities:</b> {', '.join(keep_facilities)}")
+            else:
+                summary_lines.append(line)
+        return '\n'.join(summary_lines)
+
     def _resolve_keep_types(self, subscription_type, source):
         """Return the slot type strings to keep for a given subscription type and source.
 
@@ -655,25 +955,24 @@ class SamezuBot:
         """Apply default (relevant) filtering to a Tokyo cached result."""
         return self._filter_result_by_slot_types(cached_result, list(TARGET_SLOT_TYPES))
 
-    async def _send_notifications_to_subscribers(self, result_to_send, source=None):
-        """Send notifications to subscribers, filtered by source and subscription type."""
-        subscribers = self.get_subscribers()
-        if not subscribers:
-            logger.warning("No subscribers to send notifications to.")
-            return
-
-        tasks = []
-        for chat_id, user_info_raw in subscribers:
+    def _notification_messages_for_subscribers(self, result_to_send, source=None):
+        """Build (chat_id, message) pairs for subscribers who should be notified."""
+        messages = []
+        for chat_id, user_info_raw in self.get_subscribers():
             try:
                 chat_id = int(chat_id)
                 username, sources, subscription_type = self.parse_subscriber_info(user_info_raw)
 
-                if source and source not in sources:
+                if not self._subscriber_matches_source(sources, source):
                     logger.info(f"Skipping subscriber {chat_id} - not subscribed to {source}")
                     continue
 
                 keep_types = self._resolve_keep_types(subscription_type, source)
                 filtered_result = self._filter_result_by_slot_types(result_to_send, keep_types)
+                if source == "tokyo":
+                    facilities = self._facilities_for_subscriber_sources(sources)
+                    if facilities is not None:
+                        filtered_result = self._filter_result_by_facilities(filtered_result, facilities)
 
                 if filtered_result and "❌" not in filtered_result:
                     if username and username != f"User{chat_id}":
@@ -681,25 +980,29 @@ class SamezuBot:
                         notification_message = f"🔔 {tag}\n\n{filtered_result}"
                     else:
                         notification_message = filtered_result
-
-                    task = self.application.bot.send_message(
-                        chat_id=chat_id,
-                        text=notification_message,
-                        parse_mode='HTML'
-                    )
-                    tasks.append(task)
+                    messages.append((chat_id, notification_message))
                     logger.info(f"Sending {subscription_type} notification to subscriber {chat_id}")
                 else:
                     logger.info(f"Skipping notification for subscriber {chat_id} - no {subscription_type} slots found")
 
             except Exception as e:
-                logger.error(f"Failed to send notification to subscriber {chat_id}: {e}")
+                logger.error(f"Failed to prepare notification for subscriber {chat_id}: {e}")
 
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-            logger.info(f"Sent notifications to {len(tasks)} subscribers.")
-        else:
-            logger.info("No notifications sent - no relevant slots for any subscribers.")
+        return messages
+
+    async def _send_notifications_to_subscribers(self, result_to_send, source=None):
+        """Send notifications to subscribers, filtered by source and subscription type."""
+        messages = self._notification_messages_for_subscribers(result_to_send, source=source)
+        if not messages:
+            if not self.get_subscribers():
+                logger.warning("No subscribers to send notifications to.")
+            else:
+                logger.info("No notifications sent - no relevant slots for any subscribers.")
+            return
+
+        tasks = [self._telegram_send(chat_id, text) for chat_id, text in messages]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info(f"Sent notifications to {len(tasks)} subscribers.")
 
     async def _filter_result_for_subscription(self, result, subscription_type, source=None):
         """Filter result based on subscription type and source."""
@@ -730,35 +1033,49 @@ class SamezuBot:
                 source = "fuchu"
         return force_check, show_all, source
 
-    async def _handle_cached_result(self, update, user_name, user_id, force_check, show_all, cache=None, checker=None):
+    def _cache_matches_navigation(self, cache, use_month_navigation):
+        """Cache is only valid for the same navigation mode as the command."""
+        return cache.get('use_month_navigation', False) == use_month_navigation
+
+    async def _handle_cached_result(
+        self, update, user_name, user_id, force_check, show_all, cache=None, checker=None,
+        check_source=None, use_month_navigation=False,
+    ):
         """Handle cached result response for check commands."""
         if cache is None:
             cache = self.cache
         if checker is None:
             checker = self.reservation_checker
 
-        if cache['result'] and cache['timestamp'] and not force_check:
+        if (
+            cache['result']
+            and cache['timestamp']
+            and not force_check
+            and self._cache_matches_navigation(cache, use_month_navigation)
+            and self._is_cache_valid(cache)
+        ):
             elapsed = time.time() - cache['timestamp']
-            if elapsed < cache['cache_duration']:
-                cache_age_minutes = int(elapsed // 60)
-                cache_age_seconds = int(elapsed % 60)
+            cache_age_minutes = int(elapsed // 60)
+            cache_age_seconds = int(elapsed % 60)
 
-                cached_result = cache['result']
-                if not show_all:
-                    result_to_show = self._filter_result_by_slot_types(cached_result, list(checker.target_slot_types))
-                    cache_type_text = "filtered"
-                else:
-                    result_to_show = cached_result
-                    cache_type_text = "unfiltered"
-
-                logger.info(f"User {user_name} ({user_id}) received cached {cache_type_text} result.")
-                await update.message.reply_text(
-                    f"⚡ <b>Using cached result ({cache_type_text})</b>\n\n"
-                    f"📊 Result from {cache_age_minutes}m {cache_age_seconds}s ago:\n\n"
-                    f"{result_to_show}",
-                    parse_mode='HTML'
+            cached_result = cache['result']
+            if show_all and check_source not in self.SOURCE_FACILITY_MAP:
+                result_to_show = cached_result
+                cache_type_text = "unfiltered"
+            else:
+                result_to_show = self._apply_check_filters(
+                    cached_result, checker, show_all, check_source
                 )
-                return True
+                cache_type_text = "filtered"
+
+            logger.info(f"User {user_name} ({user_id}) received cached {cache_type_text} result.")
+            await update.message.reply_text(
+                f"⚡ <b>Using cached result ({cache_type_text})</b>\n\n"
+                f"📊 Result from {cache_age_minutes}m {cache_age_seconds}s ago:\n\n"
+                f"{result_to_show}",
+                parse_mode='HTML'
+            )
+            return True
         return False
 
     async def _format_cache_response(self, cached_result, show_all, cache_age_minutes, cache_age_seconds):

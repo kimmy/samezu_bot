@@ -145,6 +145,28 @@ def test_add_and_get_subscriber(tmp_path, monkeypatch):
     assert any(s[0] == '99999' for s in subs)
 
 
+def test_upsert_subscriber_replaces_existing_line(tmp_path, monkeypatch):
+    bot = make_bot()
+    sub_file = tmp_path / 'subscribers.txt'
+    monkeypatch.setattr(bot, 'SUBSCRIBERS_FILE', str(sub_file))
+    bot.upsert_subscriber(99999, "@alice|samezu|relevant")
+    bot.upsert_subscriber(99999, "@alice|kanagawa|am")
+    subs = bot.get_subscribers()
+    assert len(subs) == 1
+    assert subs[0] == ('99999', '@alice|kanagawa|am')
+
+
+def test_upsert_subscriber_removes_duplicate_chat_ids(tmp_path, monkeypatch):
+    bot = make_bot()
+    sub_file = tmp_path / 'subscribers.txt'
+    sub_file.write_text("99999|old|relevant\n99999|older|all\n")
+    monkeypatch.setattr(bot, 'SUBSCRIBERS_FILE', str(sub_file))
+    bot.upsert_subscriber(99999, "@alice|fuchu|ari")
+    subs = bot.get_subscribers()
+    assert len(subs) == 1
+    assert subs[0][1] == '@alice|fuchu|ari'
+
+
 def test_remove_subscriber(tmp_path, monkeypatch):
     bot = make_bot()
     monkeypatch.setattr(bot, 'SUBSCRIBERS_FILE', str(tmp_path / 'subscribers.txt'))

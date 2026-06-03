@@ -21,13 +21,16 @@ async def test_subscribe_command(monkeypatch):
     class DummyContext:
         DEFAULT_TYPE = None
         args = []  # Add missing args attribute
-    # Patch add_subscriber to track calls
     called = {}
-    def fake_add_subscriber(chat_id, user_info=None):
+
+    def fake_upsert_subscriber(chat_id, user_info=None):
         called['chat_id'] = chat_id
-    bot.add_subscriber = fake_add_subscriber
+        called['user_info'] = user_info
+
+    bot.upsert_subscriber = fake_upsert_subscriber
     await bot.subscribe_command(DummyUpdate(), DummyContext())
     assert called['chat_id'] == 12345
+    assert 'samezu' in called['user_info']
 
 
 async def _run_one_scheduler_iteration(bot, run_check_result):

@@ -37,8 +37,7 @@ async def test_check_command_cache_valid():
     update = DummyUpdate()
     context = DummyContext()
     import time
-    bot.cache['result'] = "Test result"
-    bot.cache['timestamp'] = time.time()
+    bot._update_cache_after_scrape(bot.cache, "Test result", use_month_navigation=False)
     await bot.check_command(update, context)
     assert "Using cached result" in update.message.last_text
 
@@ -73,11 +72,35 @@ async def test_check_month_command_cache_valid():
     bot = SamezuBot()
     update = DummyUpdate()
     context = DummyContext()
-    import time
-    bot.cache['result'] = "Test result"
-    bot.cache['timestamp'] = time.time()
+    bot._update_cache_after_scrape(bot.cache, "Test result", use_month_navigation=True)
     await bot.check_month_command(update, context)
     assert "Using cached result" in update.message.last_text
+
+
+@pytest.mark.asyncio
+async def test_check_month_rejects_weekly_cache():
+    bot = SamezuBot()
+    update = DummyUpdate()
+    context = DummyContext()
+    bot._update_cache_after_scrape(bot.cache, "Weekly cached", use_month_navigation=False)
+    bot.application = DummyApplication()
+    bot.check_lock = asyncio.Lock()
+    await bot.check_month_command(update, context)
+    assert "Using cached result" not in (update.message.last_text or "")
+    assert "month navigation" in update.message.last_text
+
+
+@pytest.mark.asyncio
+async def test_check_rejects_month_cache():
+    bot = SamezuBot()
+    update = DummyUpdate()
+    context = DummyContext()
+    bot._update_cache_after_scrape(bot.cache, "Month cached", use_month_navigation=True)
+    bot.application = DummyApplication()
+    bot.check_lock = asyncio.Lock()
+    await bot.check_command(update, context)
+    assert "Using cached result" not in (update.message.last_text or "")
+    assert "Checking for available slots" in update.message.last_text
 
 @pytest.mark.asyncio
 async def test_check_month_command_cache_expired():
@@ -200,12 +223,10 @@ async def _run_background_check(bot, source, fake_result):
     """Helper: run _background_check_task with a mocked checker result."""
     messages_sent = []
 
-    class FakeBot:
-        async def send_message(self, chat_id, text, parse_mode=None):
-            messages_sent.append(text)
+    async def capture_send(chat_id, text, parse_mode='HTML'):
+        messages_sent.append(text)
 
-    class FakeContext:
-        bot = FakeBot()
+    bot._telegram_send = capture_send
 
     async def fake_run_check(*args, **kwargs):
         return fake_result
@@ -215,10 +236,10 @@ async def _run_background_check(bot, source, fake_result):
     else:
         bot.reservation_checker.run_check = fake_run_check
 
-    bot.waiting_users.add((DummyUser.id, DummyChat.id))
+    scrape_key = "kanagawa" if source == "kanagawa" else "tokyo"
+    bot.waiting_users[scrape_key].add((DummyUser.id, DummyChat.id, source, True, False, False))
 
-    context = FakeContext()
-    await bot._background_check_task(context, source=source)
+    await bot._background_check_task(None, source=source, scrape_key=scrape_key)
     return messages_sent
 
 
