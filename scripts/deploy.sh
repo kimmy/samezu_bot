@@ -12,9 +12,9 @@ set -euo pipefail
 cd $REMOTE_DIR
 git pull
 if [ -d venv ]; then
-  ./venv/bin/python -m pytest -q
+  ./venv/bin/python -m pytest -q -m "not live"
 else
-  python3 -m pytest -q
+  python3 -m pytest -q -m "not live"
 fi
 sudo systemctl restart $SERVICE
 sudo systemctl status $SERVICE --no-pager

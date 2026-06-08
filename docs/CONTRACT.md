@@ -37,14 +37,15 @@ Each checker instance has its own `target_url`, `target_facilities`, `target_slo
 ## Cache
 
 - One cache dict per scrape key: `cache` (Tokyo), `kanagawa_cache` (Kanagawa).
-- Stores **formatted HTML results** today (slot-object cache is planned).
+- Stores a **`CheckResult`** (`domain.py`: `slots`, optional `error`, `target_url`, `facilities_label`). Telegram HTML is rendered at read time via `format_check_message()`. **Error results are not cached**; `/check` never serves a cached error.
 - Metadata: `use_month_navigation` must match for cache hits (`/check` vs `/check_month`).
 - TTL: `CACHE_DURATION` (default 120s).
 
 ## Scheduler
 
 - On bot start, runs Tokyo + Kanagawa scrapes **immediately**, then every `CHECK_INTERVAL` seconds (default 300).
-- Updates both caches even when the result is `❌ No slots` or an error string.
+- Updates the cache on a **successful** scrape, including when the result is `❌ No slots`.
+- On scrape **errors**, leaves the existing cache and `last_notified` unchanged (see Cache and Notifications).
 
 ## Notifications
 
@@ -53,7 +54,7 @@ Each checker instance has its own `target_url`, `target_facilities`, `target_slo
   - source match (`tokyo` / `kanagawa`)
   - facility filter (samezu/fuchu only)
   - slot-type filter (`relevant`, `ari`, `nai`, `am`, `pm`, `all`)
-- `last_notified[source]` suppresses duplicate alerts until slots change or disappear.
+- `last_notified[source]` stores a **slot signature** (`scheduler_notify_signature`: relevant types only), not rendered HTML. Duplicate alerts are suppressed until the slot set changes or disappears. **Transient scrape errors do not clear** `last_notified` (only a successful empty scrape does).
 
 ## Manual `/check`
 

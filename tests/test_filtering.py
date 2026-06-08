@@ -1,5 +1,15 @@
 import pytest
+from domain import NO_SLOTS_MESSAGE, format_check_message
 from run_bot import SamezuBot
+from tests.test_helpers import (
+    CHECK_KANAGAWA,
+    CHECK_NO_SLOTS,
+    CHECK_TOKYO_MIXED,
+    CHECK_TOKYO_SPLIT,
+    KANAGAWA_SLOTS,
+    check_error,
+    check_from_slots,
+)
 
 
 # --- Fixtures ---
@@ -21,6 +31,12 @@ TOKYO_SLOTS_ARI_ONLY = [
 TOKYO_SLOTS_NAI_ONLY = [
     {'date': '06/05 (Thu)', 'facility': '鮫洲試験場', 'applicant_type': '住民票のない方'},
 ]
+
+TOKYO_LONG_NAI_SLOT = {
+    'date': '08/21 (Thu)',
+    'facility': '鮫洲試験場',
+    'applicant_type': '29の国･地域以外の方で、住民票のない方',
+}
 
 
 # --- process_available_slots ---
@@ -101,37 +117,11 @@ async def test_process_slots_multiple_dates_all_present():
 
 # --- _filter_result_for_subscription ---
 
-FORMATTED_MIXED = (
-    "🎉 <b>Available Reservation Slots Found!</b>\n\n"
-    "📍 <b>Facilities:</b> 鮫洲試験場\n\n"
-    "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
-    "📅 <b>06/05 (Thu)</b>\n"
-    "   🏢 <b>鮫洲試験場</b>\n"
-    "      • 住民票のある方\n"
-    "      • 住民票のない方\n"
-    "\n"
-    "🔗 <a href='http://example.com'>Book Now</a>"
-)
-
-# Two Tokyo facilities under one date; slot types differ per facility (regression: orphan 🏢 headers).
-FORMATTED_TOKYO_TWO_FACILITIES_SPLIT_TYPES = (
-    "🎉 <b>Available Reservation Slots Found!</b>\n\n"
-    "📍 <b>Facilities:</b> 府中試験場, 鮫洲試験場\n\n"
-    "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
-    "📅 <b>06/05 (Thu)</b>\n"
-    "   🏢 <b>鮫洲試験場</b>\n"
-    "      • 住民票のない方\n"
-    "   🏢 <b>府中試験場</b>\n"
-    "      • 住民票のある方\n"
-    "\n"
-    "🔗 <a href='http://example.com'>Book Now</a>"
-)
-
 
 @pytest.mark.asyncio
 async def test_filter_subscription_all_returns_both_types():
     bot = make_bot()
-    result = await bot._filter_result_for_subscription(FORMATTED_MIXED, "all", source="tokyo")
+    result = await bot._filter_result_for_subscription(CHECK_TOKYO_MIXED, "all", source="tokyo")
     assert '住民票のある方' in result
     assert '住民票のない方' in result
 
@@ -139,7 +129,7 @@ async def test_filter_subscription_all_returns_both_types():
 @pytest.mark.asyncio
 async def test_filter_subscription_ari_keeps_ari_removes_nai():
     bot = make_bot()
-    result = await bot._filter_result_for_subscription(FORMATTED_MIXED, "ari", source="tokyo")
+    result = await bot._filter_result_for_subscription(CHECK_TOKYO_MIXED, "ari", source="tokyo")
     assert '住民票のある方' in result
     assert '住民票のない方' not in result
 
@@ -147,41 +137,53 @@ async def test_filter_subscription_ari_keeps_ari_removes_nai():
 @pytest.mark.asyncio
 async def test_filter_subscription_nai_keeps_nai_removes_ari():
     bot = make_bot()
-    result = await bot._filter_result_for_subscription(FORMATTED_MIXED, "nai", source="tokyo")
+    result = await bot._filter_result_for_subscription(CHECK_TOKYO_MIXED, "nai", source="tokyo")
     assert '住民票のない方' in result
     assert '住民票のある方' not in result
 
 
 @pytest.mark.asyncio
+async def test_filter_subscription_nai_matches_tokyo_long_form_scraped_label():
+    bot = make_bot()
+    check = check_from_slots([TOKYO_LONG_NAI_SLOT], facilities_label=["鮫洲試験場"])
+    result = await bot._filter_result_for_subscription(check, "nai", source="tokyo")
+    assert "08/21" in result
+    assert TOKYO_LONG_NAI_SLOT["applicant_type"] in result
+    assert "❌ No slots found" not in result
+
+
+@pytest.mark.asyncio
 async def test_filter_subscription_relevant_same_as_ari():
     bot = make_bot()
-    ari = await bot._filter_result_for_subscription(FORMATTED_MIXED, "ari", source="tokyo")
-    relevant = await bot._filter_result_for_subscription(FORMATTED_MIXED, "relevant", source="tokyo")
+    ari = await bot._filter_result_for_subscription(CHECK_TOKYO_MIXED, "ari", source="tokyo")
+    relevant = await bot._filter_result_for_subscription(CHECK_TOKYO_MIXED, "relevant", source="tokyo")
     assert ari == relevant
 
 
 @pytest.mark.asyncio
 async def test_filter_subscription_passes_through_no_slots():
     bot = make_bot()
-    no_slots = "❌ No slots"
-    result = await bot._filter_result_for_subscription(no_slots, "ari", source="tokyo")
-    assert result == no_slots
+    result = await bot._filter_result_for_subscription(CHECK_NO_SLOTS, "ari", source="tokyo")
+    assert result == NO_SLOTS_MESSAGE
 
 
 @pytest.mark.asyncio
 async def test_filter_subscription_passes_through_error():
     bot = make_bot()
-    error = "❌ Error during reservation check: timeout"
+    error = check_error("❌ Error during reservation check: timeout")
     result = await bot._filter_result_for_subscription(error, "all", source="tokyo")
-    assert result == error
+    assert result == error.error
 
 
 def test_filter_slot_types_two_facilities_drops_orphan_samezu_header():
     """ARI filter must not leave 鮫洲 when only 府中 has matching bullets."""
     bot = make_bot()
-    result = bot._filter_result_by_slot_types(
-        FORMATTED_TOKYO_TWO_FACILITIES_SPLIT_TYPES, ["住民票のある方"]
+    result = format_check_message(
+        CHECK_TOKYO_SPLIT,
+        keep_types=["住民票のある方"],
     )
+    assert "📍 <b>Facilities:</b> 府中試験場" in result
+    assert "鮫洲試験場" not in result.split("To book")[0]
     assert "🏢 <b>府中試験場</b>" in result
     assert "住民票のある方" in result
     assert "📅 <b>06/05 (Thu)</b>" in result
@@ -191,8 +193,8 @@ def test_filter_slot_types_two_facilities_drops_orphan_samezu_header():
 
 def test_apply_check_filters_samezu_no_false_positive_when_only_fuchu_has_ari():
     bot = make_bot()
-    result = bot._apply_check_filters(
-        FORMATTED_TOKYO_TWO_FACILITIES_SPLIT_TYPES,
+    result = bot._format_check_for_user(
+        CHECK_TOKYO_SPLIT,
         bot.reservation_checker,
         show_all=False,
         check_source="samezu",
@@ -366,25 +368,20 @@ def test_resolve_keep_types_kanagawa_pm():
     assert bot._resolve_keep_types("pm", "kanagawa") == ["普通車ＰＭ"]
 
 
-# --- Kanagawa result filtering via _filter_result_by_slot_types ---
+# --- Kanagawa slot-type filtering ---
 
-FORMATTED_KANAGAWA = (
-    "🎉 <b>Available Reservation Slots Found!</b>\n\n"
-    "📍 <b>Facilities:</b> 外国免許四輪車\n\n"
-    "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
-    "📅 <b>06/05 (Thu)</b>\n"
-    "   🏢 <b>外国免許四輪車</b>\n"
-    "      • 普通車ＡＭ\n"
-    "      • 普通車ＰＭ\n"
-    "      • 準中型車ＡＭ\n"
-    "\n"
-    "🔗 <a href='http://example.com'>Book Now</a>"
+CHECK_KANAGAWA_EXTRA = check_from_slots(
+    [
+        *KANAGAWA_SLOTS,
+        {"date": "06/05 (Thu)", "facility": "外国免許四輪車", "applicant_type": "準中型車ＡＭ"},
+    ],
+    facilities_label=["外国免許四輪車"],
 )
 
 
 def test_filter_kanagawa_am_only():
     bot = make_bot()
-    result = bot._filter_result_by_slot_types(FORMATTED_KANAGAWA, ["普通車ＡＭ"])
+    result = format_check_message(CHECK_KANAGAWA_EXTRA, keep_types=["普通車ＡＭ"])
     assert '普通車ＡＭ' in result
     assert '普通車ＰＭ' not in result
     assert '準中型車ＡＭ' not in result
@@ -392,15 +389,15 @@ def test_filter_kanagawa_am_only():
 
 def test_filter_kanagawa_pm_only():
     bot = make_bot()
-    result = bot._filter_result_by_slot_types(FORMATTED_KANAGAWA, ["普通車ＰＭ"])
+    result = format_check_message(CHECK_KANAGAWA, keep_types=["普通車ＰＭ"])
     assert '普通車ＰＭ' in result
     assert '普通車ＡＭ' not in result
 
 
 def test_filter_kanagawa_none_returns_all():
     bot = make_bot()
-    result = bot._filter_result_by_slot_types(FORMATTED_KANAGAWA, None)
-    assert result == FORMATTED_KANAGAWA
+    result = format_check_message(CHECK_KANAGAWA, keep_types=None)
+    assert "普通車ＡＭ" in result and "普通車ＰＭ" in result
 
 
 # --- _parse_command_args source parsing ---

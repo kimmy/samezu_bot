@@ -6,13 +6,20 @@ and sends Telegram notifications when slots are found.
 """
 
 import asyncio
-import html
 import logging
 import os
 import re
 from datetime import datetime
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from playwright.async_api import async_playwright, Page
+
+from domain import (
+    CheckResult,
+    Slot,
+    dedupe_slots,
+    filter_slots,
+    format_check_message,
+)
 from telegram import Bot
 # Import all template values as defaults
 from config_template import *
@@ -130,6 +137,32 @@ class ReservationChecker:
     def _applicant_type_matches(cls, applicant_type: str, target_types: List[str]) -> bool:
         return cls._normalize_label(applicant_type) in target_types
 
+    @classmethod
+    def _resolve_calendar_row(
+        cls,
+        first_text: str,
+        second_text: str,
+        current_facility: Optional[str],
+        target_facilities: List[str],
+    ) -> Optional[Tuple[str, str, str, int]]:
+        """Map a table row to facility, slot type, and where date cells start.
+
+        Kanagawa (and similar layouts) use rowspan on the facility cell, so only the
+        first slot-type row includes the facility name; follow-on rows have slot type
+        in the first column.
+        """
+        first_text = cls._normalize_label(first_text)
+        second_text = cls._normalize_label(second_text)
+
+        for facility in target_facilities:
+            if facility in first_text:
+                return facility, facility, second_text, 2
+
+        if current_facility:
+            return current_facility, current_facility, first_text, 1
+
+        return None
+
     async def _collect_date_headers(self, rows) -> List[str]:
         """Find the calendar header row (cells look like MM/DD)."""
         for row in rows:
@@ -163,7 +196,7 @@ class ReservationChecker:
 
         return f"Unknown date {index + 1}"
 
-    async def get_available_dates(self, page: Page) -> List[Dict]:
+    async def get_available_dates(self, page: Page) -> List[Slot]:
         """Extract available dates from the current page."""
         available_slots = []
 
@@ -176,39 +209,25 @@ class ReservationChecker:
             else:
                 logger.info("📅 Date range: Unable to determine")
 
-            # Find all rows for target facilities
+            current_facility = None
             for row in rows:
-                # Get the facility name from the first cell (could be th or td)
-                facility_cell = await row.query_selector('th:first-child, td:first-child')
-                if not facility_cell:
-                    continue
-
-                facility_text = await facility_cell.text_content()
-                if not facility_text:
-                    continue
-
-                # Check if this row is for any of our target facilities
-                target_facility = None
-                for facility in self.target_facilities:
-                    if facility in facility_text:
-                        target_facility = facility
-                        break
-
-                if not target_facility:
-                    continue
-
-                # Get applicant type from second cell (could be th or td)
-                applicant_cell = await row.query_selector('th:nth-child(2), td:nth-child(2)')
-                if not applicant_cell:
-                    continue
-
-                applicant_type = await applicant_cell.text_content()
-                applicant_type = self._normalize_label(applicant_type) if applicant_type else "Unknown"
-
                 row_cells = await row.query_selector_all('th, td')
-                if len(row_cells) < 3:
+                if len(row_cells) < 2:
                     continue
-                date_cells = row_cells[2:]
+
+                first_text = await row_cells[0].text_content() or ""
+                second_text = await row_cells[1].text_content() or ""
+                resolved = self._resolve_calendar_row(
+                    first_text, second_text, current_facility, self.target_facilities
+                )
+                if not resolved:
+                    continue
+
+                current_facility, target_facility, applicant_type, date_start = resolved
+                applicant_type = self._normalize_label(applicant_type) or "Unknown"
+                date_cells = row_cells[date_start:]
+                if not date_cells:
+                    continue
 
                 for i, cell in enumerate(date_cells):
                     date_text = await self._date_for_slot_cell(cell, i, date_headers)
@@ -218,11 +237,13 @@ class ReservationChecker:
                     if svg:
                         aria_label = await svg.get_attribute('aria-label')
                         if aria_label == "予約可能":
-                            available_slots.append({
-                                'date': date_text,
-                                'facility': target_facility,
-                                'applicant_type': applicant_type
-                            })
+                            available_slots.append(
+                                Slot(
+                                    date=date_text,
+                                    facility=target_facility,
+                                    applicant_type=applicant_type,
+                                )
+                            )
                             logger.info(f"✅ Found available slot: {date_text} - {target_facility} - {applicant_type}")
                         elif aria_label == "空き無":
                             logger.debug(f"❌ No availability: {date_text} - {applicant_type}")
@@ -307,20 +328,18 @@ class ReservationChecker:
         # Final summary
         logger.info(f"📊 SUMMARY: Checked {period_count} {navigation_type}s, found {len(all_available_slots)} total available slots")
 
+        all_available_slots = list(dedupe_slots(all_available_slots))
+
         if all_available_slots:
-            # Show details of found slots grouped by facility
             logger.info("🎉 Available slots found:")
-            slots_by_facility = {}
+            slots_by_facility: dict = {}
             for slot in all_available_slots:
-                facility = slot['facility']
-                if facility not in slots_by_facility:
-                    slots_by_facility[facility] = []
-                slots_by_facility[facility].append(slot)
+                slots_by_facility.setdefault(slot.facility, []).append(slot)
 
             for facility, slots in slots_by_facility.items():
                 logger.info(f"   🏢 {facility}: {len(slots)} slots")
                 for slot in slots:
-                    logger.info(f"      📅 {slot['date']} - {slot['applicant_type']}")
+                    logger.info(f"      📅 {slot.date} - {slot.applicant_type}")
         else:
             logger.info(f"😔 No available slots found in any {navigation_type}")
 
@@ -436,11 +455,29 @@ class ReservationChecker:
                 await browser.close()
 
                 if available_slots:
-                    # Use show_all parameter to override default filtering
-                    filter_applicants = not show_all  # If show_all=True, don't filter
-                    result_message = await self.process_available_slots(
-                        available_slots, send_notifications=False, filter_applicants=filter_applicants
+                    check = CheckResult.from_slots(
+                        available_slots,
+                        target_url=self.target_url,
+                        facilities_label=tuple(self.target_facilities),
                     )
+                    if not show_all and SHOW_ONLY_RELEVANT_APPLICANTS and self.target_slot_types:
+                        filtered = filter_slots(check.slots, keep_types=self.target_slot_types)
+                        if not filtered:
+                            return CheckResult.from_error(
+                                f"❌ No relevant slots found (only showing {', '.join(self.target_slot_types)})",
+                                target_url=self.target_url,
+                                facilities_label=tuple(self.target_facilities),
+                            )
+                        logger.info(
+                            f"🔍 Filtered results: {len(check.slots)} total slots → {len(filtered)} relevant slots"
+                        )
+                        check = CheckResult.from_slots(
+                            filtered,
+                            target_url=self.target_url,
+                            facilities_label=tuple(self.target_facilities),
+                        )
+
+                    result_message = format_check_message(check)
                     if send_notifications:
                         if os.environ.get("ALLOW_STANDALONE_NOTIFY") == "1":
                             logger.warning(
@@ -453,10 +490,13 @@ class ReservationChecker:
                                 "send_notifications=True ignored. Run run_bot.py for production delivery, "
                                 "or set ALLOW_STANDALONE_NOTIFY=1 to force legacy broadcast."
                             )
-                    return result_message
-                else:
-                    logger.info("No available slots found")
-                    return "❌ No slots"
+                    return check
+
+                logger.info("No available slots found")
+                return CheckResult.no_slots(
+                    target_url=self.target_url,
+                    facilities_label=tuple(self.target_facilities),
+                )
         except Exception as e:
             error_msg = str(e)
             # Clean up error message to avoid HTML parsing issues
@@ -470,58 +510,46 @@ class ReservationChecker:
                 error_msg = f"❌ Error during reservation check: {error_msg}"
 
             logger.error(f"Error during reservation check: {e}")
-            return error_msg
+            return CheckResult.from_error(
+                error_msg,
+                target_url=self.target_url,
+                facilities_label=tuple(self.target_facilities),
+            )
 
-    async def process_available_slots(self, slots: List[Dict], send_notifications=True, filter_applicants=None):
-        """Format available slots for notification or user display."""
+    async def process_available_slots(
+        self,
+        slots: List,
+        send_notifications=True,
+        filter_applicants=None,
+    ) -> str:
+        """Format available slots for notification or user display (returns HTML string)."""
         if not slots:
             return ""
 
-        # Use configuration default if filter_applicants not specified
         if filter_applicants is None:
             filter_applicants = SHOW_ONLY_RELEVANT_APPLICANTS
 
-        # Filter slots if requested
-        if filter_applicants:
-            original_count = len(slots)
-            if self.target_slot_types:
-                filtered_slots = [
-                    slot for slot in slots
-                    if self._applicant_type_matches(slot['applicant_type'], self.target_slot_types)
-                ]
-            else:
-                filtered_slots = slots
-            if not filtered_slots:
+        check = CheckResult.from_slots(
+            slots,
+            target_url=self.target_url,
+            facilities_label=tuple(self.target_facilities),
+        )
+        apply_default = (
+            list(self.target_slot_types) if filter_applicants and self.target_slot_types else None
+        )
+        if apply_default and check.has_slots:
+            filtered = filter_slots(check.slots, keep_types=apply_default)
+            if not filtered:
                 return f"❌ No relevant slots found (only showing {', '.join(self.target_slot_types)})"
-            slots = filtered_slots
-            logger.info(f"🔍 Filtered results: {original_count} total slots → {len(slots)} relevant slots")
-
-        slots_by_date_facility = {}
-        for slot in slots:
-            date = slot['date']
-            facility = slot['facility']
-            applicant_type = slot['applicant_type']
-            if date not in slots_by_date_facility:
-                slots_by_date_facility[date] = {}
-            if facility not in slots_by_date_facility[date]:
-                slots_by_date_facility[date][facility] = []
-            slots_by_date_facility[date][facility].append(applicant_type)
-
-        message = "🎉 <b>Available Reservation Slots Found!</b>\n\n"
-        message += f"📍 <b>Facilities:</b> {', '.join(self.target_facilities)}\n\n"
-        message += "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
-
-        for date, facilities in slots_by_date_facility.items():
-            message += f"📅 <b>{html.escape(date)}</b>\n"
-            for facility, applicant_types in facilities.items():
-                message += f"   🏢 <b>{html.escape(facility)}</b>\n"
-                for applicant_type in applicant_types:
-                    message += f"      • {html.escape(applicant_type)}\n"
-            message += "\n"
-
-        message += f"🔗 <a href='{self.target_url}'>Book Now</a>"
-
-        return message
+            logger.info(
+                f"🔍 Filtered results: {len(check.slots)} total slots → {len(filtered)} relevant slots"
+            )
+            check = CheckResult.from_slots(
+                filtered,
+                target_url=self.target_url,
+                facilities_label=tuple(self.target_facilities),
+            )
+        return format_check_message(check)
 
 async def main():
     """CLI debug: scrape and print; never notifies subscribers."""
@@ -529,8 +557,10 @@ async def main():
 
     configure_logging()
     checker = ReservationChecker()
-    result = await checker.run_check(send_notifications=False)
-    print(result)
+    check = await checker.run_check(send_notifications=False)
+    from domain import format_check_message
+
+    print(format_check_message(check))
 
 if __name__ == "__main__":
     asyncio.run(main())

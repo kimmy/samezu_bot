@@ -55,9 +55,11 @@ ssh -i ~/.ssh/samezu_bot2.key ubuntu@131.186.56.62 "sudo journalctl -u samezu_bo
 
 The bot has two main modules and a config layer:
 
-**`run_bot.py`** — The Telegram bot layer. `SamezuBot` handles all command handlers (`/check`, `/subscribe`, etc.), in-memory caching of scrape results per source, subscriber management (read/write `subscribers.txt`), filtering logic (by slot type), and a background scheduler (`asyncio` task that runs every `CHECK_INTERVAL` seconds). `BotRunner` wires up signal handling and the `python-telegram-bot` polling loop.
+**`run_bot.py`** — The Telegram bot layer. `SamezuBot` handles command handlers, per-source caches of `CheckResult`, subscriber management, and the background scheduler. Filtering and Telegram HTML use `domain.format_check_message()` at read/notify time (not HTML string parsing).
 
-**`reservation_checker_playwright.py`** — The web scraping layer. `ReservationChecker` accepts `target_url`, `target_facilities`, `target_slot_types`, and `source_name` as constructor params. It uses Playwright (headless Chromium) to navigate the reservation website, clicking navigation buttons (`2週後＞` or `1か月後＞`) and detecting available slots via SVG elements with `aria-label="予約可能"`. Results are a list of `{date, facility, applicant_type}` dicts. One class, two instances (Tokyo + Kanagawa).
+**`domain.py`** — `Slot` and `CheckResult` types; `filter_slots()`, `render_slots_message()`, `format_check_message()`.
+
+**`reservation_checker_playwright.py`** — Playwright scraper. Returns `CheckResult` from `run_check()`; detects slots via `aria-label="予約可能"`. Handles Kanagawa calendar `rowspan` on facility cells. Two instances (Tokyo + Kanagawa).
 
 **Config layer** — Both modules do `from config_template import *` then attempt `import config` to override. `config_template.py` provides safe defaults; `config.py` (gitignored) holds local overrides. On the VPS, a `.env` or the systemd unit supplies `TELEGRAM_BOT_TOKEN`.
 
@@ -71,9 +73,11 @@ Each has its own cache dict (`self.cache` / `self.kanagawa_cache`). The schedule
 - `sources`: comma-separated list — `samezu`, `fuchu`, `kanagawa` (old 2-field entries default to all sources)
 - `type`: `relevant` (default), `all`, `nai` (住民票のない方 only), `ari` (住民票のある方 only), `am` (普通車ＡＭ only, Kanagawa), `pm` (普通車ＰＭ only, Kanagawa)
 
-**Caching** — One unfiltered cache per source. Filtering applied at read time. Duration: `CACHE_DURATION` seconds (default 120s).
+**Caching** — One `CheckResult` per scrape key (`cache` / `kanagawa_cache`). Subscriber and `/check` filters applied when rendering messages. Duration: `CACHE_DURATION` seconds (default 120s).
 
-**Scheduler notifications** — After each check, the filtered result is compared against `self.last_notified[source]`. Notifications are only sent if the result has changed since the last alert. When no slots are found, `last_notified` resets so a future reappearance triggers a fresh notification.
+**Scheduler notifications** — After each check, `scheduler_notify_signature()` (relevant slot types) is compared against `self.last_notified[source]`. Notifications are only sent if the slot set changed. When no relevant slots are found, `last_notified` resets so a future reappearance triggers a fresh notification.
+
+**Tests** — Default `pytest` includes Playwright-on-fixture tests (`tests/test_playwright_fixtures.py`). Live-site smoke: `LIVE_SCRAPE=1 pytest -m live`.
 
 **Concurrency** — `check_lock` (an `asyncio.Lock`) prevents concurrent scrapes. `waiting_users` is keyed by scrape key (`tokyo` / `kanagawa`); incompatible waiters are re-queued and chained scrapes run via `_start_chained_scrapes_for_remaining_waiters()`. Scheduler source `tokyo` matches subscriber sources `samezu` / `fuchu`.
 

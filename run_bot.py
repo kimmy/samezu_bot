@@ -33,6 +33,7 @@ except ImportError:
 
 configure_logging()
 
+from domain import CheckResult, format_check_message, scheduler_notify_signature
 from reservation_checker_playwright import ReservationChecker
 
 logger = logging.getLogger(BOT_LOGGER_NAME)
@@ -53,11 +54,11 @@ class SamezuBot:
         self._scrape_task_scheduled = False
         self.scheduler_task = None  # Background scheduler task
 
-        # Single cache for unfiltered results only
+        # Per-source scrape cache (CheckResult + metadata)
         self.cache = {
-            'result': None,
+            'result': None,  # CheckResult
             'timestamp': None,
-            'cache_duration': CACHE_DURATION
+            'cache_duration': CACHE_DURATION,
         }
 
         # Initialize reservation checkers
@@ -81,7 +82,7 @@ class SamezuBot:
             'cache_duration': CACHE_DURATION
         }
 
-        # Last result that was sent to subscribers per source — skip notification if unchanged
+        # Last scheduler-relevant slot signature per source (see scheduler_notify_signature)
         self.last_notified: dict = {'tokyo': None, 'kanagawa': None}
 
         # Register command handlers
@@ -269,26 +270,39 @@ class SamezuBot:
     async def _run_scheduled_check(self, checker, cache, source):
         """Run one checker, update its cache, notify relevant subscribers."""
         try:
-            result = await checker.run_check(send_notifications=False, show_all=True)
+            check = await checker.run_check(send_notifications=False, show_all=True)
         except Exception as e:
             logger.error(f"❌ Scheduled check failed for {source}: {e}")
-            result = f"❌ Error during reservation check: {e}"
+            check = CheckResult.from_error(
+                f"❌ Error during reservation check: {e}",
+                target_url=checker.target_url,
+                facilities_label=tuple(checker.target_facilities),
+            )
 
-        self._update_cache_after_scrape(cache, result, use_month_navigation=False)
-
-        filtered_result = self._filter_result_by_slot_types(result, list(checker.target_slot_types))
-        if "🎉" not in filtered_result:
-            logger.info(f"📭 No relevant slots for {source}")
-            self.last_notified[source] = None  # Reset so next open slots trigger a notification
+        if check.is_error:
+            logger.warning(
+                f"⚠️ Scheduled check error for {source}; preserving cache and last_notified"
+            )
             return
 
-        if filtered_result == self.last_notified[source]:
+        self._update_cache_after_scrape(cache, check, use_month_navigation=False)
+
+        signature = scheduler_notify_signature(
+            check,
+            default_slot_types=list(checker.target_slot_types),
+        )
+        if signature is None:
+            logger.info(f"📭 No relevant slots for {source}")
+            self.last_notified[source] = None  # Reset when slots actually disappear
+            return
+
+        if signature == self.last_notified[source]:
             logger.info(f"🔕 Slots unchanged for {source}, skipping duplicate notification")
             return
 
         logger.info(f"🎉 New slots for {source}! Sending notifications...")
-        self.last_notified[source] = filtered_result
-        await self._send_notifications_to_subscribers(result, source=source)
+        self.last_notified[source] = signature
+        await self._send_notifications_to_subscribers(check, source=source)
 
     async def unsubscribe_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /unsubscribe command."""
@@ -512,31 +526,53 @@ class SamezuBot:
             return self.kanagawa_checker, self.kanagawa_cache
         return self.reservation_checker, self.cache
 
-    def _update_cache_after_scrape(self, cache, result, use_month_navigation):
-        cache['result'] = result
+    def _update_cache_after_scrape(self, cache, check, use_month_navigation):
+        if not isinstance(check, CheckResult):
+            raise TypeError("cache expects CheckResult from scraper")
+        if check.is_error:
+            logger.warning("Refusing to cache error CheckResult")
+            return
+        cache['result'] = check
         cache['timestamp'] = time.time()
         cache['use_month_navigation'] = use_month_navigation
 
+    @staticmethod
+    def _cached_check_is_usable(check) -> bool:
+        return isinstance(check, CheckResult) and not check.is_error
+
+    def _cache_has_scrape(self, cache):
+        check = cache.get('result')
+        return check is not None and self._cached_check_is_usable(check) and cache.get('timestamp') is not None
+
     def _is_cache_valid(self, cache):
-        if not cache.get('result') or not cache.get('timestamp'):
+        if not self._cache_has_scrape(cache):
             return False
         elapsed = time.time() - cache['timestamp']
         return elapsed < cache.get('cache_duration', CACHE_DURATION)
 
-    def _cache_usable_for_waiter(self, cache, waiter, from_fresh_scrape):
-        """Whether a queued request can be answered from cache without a new scrape."""
+    @staticmethod
+    def _waiter_matches_scrape(waiter, use_month_navigation, from_fresh_scrape):
+        """Whether a queued request matches the navigation mode of a finished scrape."""
         _user_id, _chat_id, _check_source, _show_all, use_month, force = waiter
-
-        if not cache.get('result'):
+        if use_month != use_month_navigation:
             return False
-
-        if use_month != cache.get('use_month_navigation', False):
-            return False
-
         if force:
             return from_fresh_scrape
+        return True
 
-        if not from_fresh_scrape and not self._is_cache_valid(cache):
+    def _cache_usable_for_waiter(self, cache, waiter, from_fresh_scrape):
+        """Whether a queued request can be answered from cache without a new scrape."""
+        check = cache.get('result')
+        if check is None or not self._cached_check_is_usable(check):
+            return False
+
+        if not self._waiter_matches_scrape(
+            waiter, cache.get('use_month_navigation', False), from_fresh_scrape
+        ):
+            return False
+
+        _user_id, _chat_id, _check_source, _show_all, _use_month, force = waiter
+        if not from_fresh_scrape and not force and not self._is_cache_valid(cache):
             return False
 
         return True
@@ -547,6 +583,45 @@ class SamezuBot:
         self.waiting_users[scrape_key].add(
             (user_id, chat_id, check_source, show_all, use_month_navigation, force_check)
         )
+
+    async def _deliver_fresh_check_to_waiters(self, scrape_key, check, use_month_navigation):
+        """Send a just-finished scrape to compatible waiters without writing it to cache."""
+        waiters = self.waiting_users.pop(scrape_key, None)
+        if not waiters:
+            return
+
+        checker, _cache = self._checker_and_cache_for_scrape_key(scrape_key)
+        tasks = []
+        still_waiting = set()
+        delivered = 0
+
+        for waiter in waiters:
+            if not self._waiter_matches_scrape(waiter, use_month_navigation, from_fresh_scrape=True):
+                still_waiting.add(waiter)
+                continue
+
+            _user_id, chat_id, check_source, show_all, _use_month, _force = waiter
+            if show_all and check_source not in self.SOURCE_FACILITY_MAP:
+                result_to_send = format_check_message(check)
+            else:
+                result_to_send = self._format_check_for_user(
+                    check, checker, show_all, check_source
+                )
+            tasks.append(self._telegram_send(chat_id, result_to_send))
+            delivered += 1
+
+        if still_waiting:
+            self.waiting_users[scrape_key] |= still_waiting
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if delivered:
+            logger.info(f"Sent fresh result to {delivered} waiting users for {scrape_key}")
+        if still_waiting:
+            logger.info(
+                f"{len(still_waiting)} waiter(s) for {scrape_key} need a matching scrape "
+                f"(month={use_month_navigation}, fresh_only=False)"
+            )
 
     async def _deliver_to_waiting_users(self, scrape_key, from_fresh_scrape=False):
         """Send cached scrape results to waiters whose request matches the cache."""
@@ -565,7 +640,7 @@ class SamezuBot:
                 continue
 
             _user_id, chat_id, check_source, show_all, _use_month, _force = waiter
-            result_to_send = self._apply_check_filters(
+            result_to_send = self._format_check_for_user(
                 cache['result'], checker, show_all, check_source
             )
             tasks.append(self._telegram_send(chat_id, result_to_send))
@@ -633,27 +708,31 @@ class SamezuBot:
 
                     checker, cache = self._checker_and_cache_for_scrape_key(scrape_key)
 
-                    result = await checker.run_check(
+                    check = await checker.run_check(
                         send_notifications=False,
                         use_month_navigation=use_month_navigation,
-                        show_all=True
+                        show_all=True,
                     )
 
-                    self._update_cache_after_scrape(cache, result, use_month_navigation)
-
-                    await self._drain_waiting_queues_after_scrape(scrape_key)
+                    if check.is_error:
+                        logger.warning(
+                            f"Background check error for {scrape_key}; not caching result"
+                        )
+                        await self._deliver_fresh_check_to_waiters(
+                            scrape_key, check, use_month_navigation
+                        )
+                    else:
+                        self._update_cache_after_scrape(cache, check, use_month_navigation)
+                        await self._drain_waiting_queues_after_scrape(scrape_key)
 
                 except Exception as e:
                     error_message = f"❌ Error during reservation check: {str(e)}"
                     logger.error(f"Background check task failed: {e}")
-
-                    waiters = self.waiting_users.pop(scrape_key, None)
-                    if waiters:
-                        tasks = [
-                            self._telegram_send(chat_id, error_message)
-                            for _user_id, chat_id, _check_source, _show_all, _use_month, _force in waiters
-                        ]
-                        await asyncio.gather(*tasks, return_exceptions=True)
+                    await self._deliver_fresh_check_to_waiters(
+                        scrape_key,
+                        CheckResult.from_error(error_message),
+                        use_month_navigation,
+                    )
         finally:
             async with self._check_schedule_lock:
                 self._scrape_task_scheduled = False
@@ -702,7 +781,7 @@ class SamezuBot:
         def cache_line(label, cache):
             if not cache.get('timestamp'):
                 return f"⏳ {label}: no scrape yet (scheduler runs on start, then every {CHECK_INTERVAL // 60}m)"
-            if not cache.get('result'):
+            if cache.get('result') is None:
                 return f"❌ {label}: empty result"
             elapsed = time.time() - cache['timestamp']
             age = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
@@ -725,7 +804,7 @@ class SamezuBot:
         from datetime import datetime
 
         def format_cache(label, cache):
-            if not cache['result'] or not cache['timestamp']:
+            if cache.get('result') is None or not cache.get('timestamp'):
                 return f"<b>{label}:</b> ❌ empty"
             elapsed = time.time() - cache['timestamp']
             valid = elapsed < cache['cache_duration']
@@ -778,96 +857,15 @@ class SamezuBot:
             return [self.SOURCE_FACILITY_MAP[check_source]]
         return None
 
-    def _apply_check_filters(self, result, checker, show_all, check_source):
+    def _format_check_for_user(self, check, checker, show_all, check_source):
         """Apply slot-type and optional facility filters for manual /check replies."""
-        if not show_all:
-            result = self._filter_result_by_slot_types(result, list(checker.target_slot_types))
+        apply_default = None if show_all else list(checker.target_slot_types)
         facilities = self._facilities_for_check_source(check_source)
-        if facilities is not None:
-            result = self._filter_result_by_facilities(result, facilities)
-        return result
-
-    def _filter_result_by_facilities(self, result, keep_facilities):
-        """Filter a formatted result to only include matching facility blocks."""
-        if keep_facilities is None:
-            return result
-        if "❌ No slots" in result or "❌ Error" in result:
-            return result
-
-        if not any(
-            "🏢 <b>" in line and any(f in line for f in keep_facilities)
-            for line in result.split("\n")
-        ):
-            return f"❌ No slots found for {', '.join(keep_facilities)}"
-
-        lines = result.split('\n')
-        filtered_lines = []
-        in_slot_section = False
-        has_relevant_facility = False
-        current_facility_kept = False
-        pending_date_line = None
-        pending_facility_line = None
-
-        for line in lines:
-            if any(
-                h in line
-                for h in [
-                    "🎉 Available Reservation Slots Found!",
-                    "📍",
-                    "To book, click",
-                    "🔗",
-                ]
-            ):
-                filtered_lines.append(line)
-                continue
-            if "📅 <b>" in line and "</b>" in line:
-                pending_date_line = line
-                pending_facility_line = None
-                in_slot_section = True
-                has_relevant_facility = False
-                current_facility_kept = False
-                continue
-            if "🏢 <b>" in line and "</b>" in line:
-                pending_facility_line = line
-                current_facility_kept = any(f in line for f in keep_facilities)
-                continue
-            if "• " in line:
-                if current_facility_kept:
-                    if pending_date_line is not None:
-                        filtered_lines.append(pending_date_line)
-                        pending_date_line = None
-                    if pending_facility_line is not None:
-                        filtered_lines.append(pending_facility_line)
-                        pending_facility_line = None
-                    filtered_lines.append(line)
-                    has_relevant_facility = True
-                continue
-            if line.strip() == "" and in_slot_section:
-                if has_relevant_facility:
-                    if pending_date_line is not None:
-                        filtered_lines.append(pending_date_line)
-                        pending_date_line = None
-                    pending_facility_line = None
-                    filtered_lines.append(line)
-                else:
-                    pending_date_line = None
-                    pending_facility_line = None
-                in_slot_section = False
-                continue
-            if not in_slot_section or has_relevant_facility:
-                filtered_lines.append(line)
-
-        filtered_result = '\n'.join(filtered_lines)
-        if not any("• " in line for line in filtered_result.split("\n")):
-            return f"❌ No slots found for {', '.join(keep_facilities)}"
-
-        summary_lines = []
-        for line in filtered_result.split('\n'):
-            if "📍" in line and "Facilities" in line:
-                summary_lines.append(f"📍 <b>Facilities:</b> {', '.join(keep_facilities)}")
-            else:
-                summary_lines.append(line)
-        return '\n'.join(summary_lines)
+        return format_check_message(
+            check,
+            apply_default_types=apply_default,
+            keep_facilities=facilities,
+        )
 
     def _resolve_keep_types(self, subscription_type, source):
         """Return the slot type strings to keep for a given subscription type and source.
@@ -895,95 +893,11 @@ class SamezuBot:
             # fallback: use configured default
             return list(TARGET_SLOT_TYPES)
 
-    @staticmethod
-    def _slot_bullet_label(line):
-        """Extract applicant/slot type text from a bullet line."""
-        if "•" not in line:
-            return None
-        return line.split("•", 1)[-1].strip()
-
-    def _filter_result_by_slot_types(self, result, keep_types):
-        """Filter a formatted result string to only include lines matching keep_types.
-
-        keep_types=None means return result unchanged.
-        """
-        if keep_types is None:
-            return result
-        if "❌ No slots" in result or "❌ Error" in result:
-            return result
-
-        keep_set = set(keep_types)
-        if not any(
-            (label := self._slot_bullet_label(line)) and label in keep_set
-            for line in result.split("\n")
-        ):
-            return f"❌ No slots found for {', '.join(keep_types)}"
-
-        lines = result.split('\n')
-        filtered_lines = []
-        in_slot_section = False
-        has_relevant_slots = False
-        pending_date_line = None
-        pending_facility_line = None
-
-        for line in lines:
-            if any(
-                h in line
-                for h in [
-                    "🎉 Available Reservation Slots Found!",
-                    "📍",
-                    "To book, click",
-                    "🔗",
-                ]
-            ):
-                filtered_lines.append(line)
-                continue
-            if "📅 <b>" in line and "</b>" in line:
-                pending_date_line = line
-                pending_facility_line = None
-                in_slot_section = True
-                has_relevant_slots = False
-                continue
-            if "🏢 <b>" in line and "</b>" in line:
-                pending_facility_line = line
-                continue
-            if "• " in line:
-                label = self._slot_bullet_label(line)
-                if label in keep_set:
-                    if pending_date_line is not None:
-                        filtered_lines.append(pending_date_line)
-                        pending_date_line = None
-                    if pending_facility_line is not None:
-                        filtered_lines.append(pending_facility_line)
-                        pending_facility_line = None
-                    filtered_lines.append(line)
-                    has_relevant_slots = True
-                continue
-            if line.strip() == "" and in_slot_section:
-                if has_relevant_slots:
-                    if pending_date_line is not None:
-                        filtered_lines.append(pending_date_line)
-                        pending_date_line = None
-                    pending_facility_line = None
-                    filtered_lines.append(line)
-                else:
-                    pending_date_line = None
-                    pending_facility_line = None
-                in_slot_section = False
-                continue
-            if not in_slot_section or has_relevant_slots:
-                filtered_lines.append(line)
-
-        filtered_result = '\n'.join(filtered_lines)
-        if not any(
-            (label := self._slot_bullet_label(line)) and label in keep_set
-            for line in filtered_result.split("\n")
-        ):
-            return f"❌ No slots found for {', '.join(keep_types)}"
-        return filtered_result
-
-    def _notification_messages_for_subscribers(self, result_to_send, source=None):
+    def _notification_messages_for_subscribers(self, check, source=None):
         """Build (chat_id, message) pairs for subscribers who should be notified."""
+        if not isinstance(check, CheckResult):
+            raise TypeError("notifications require CheckResult")
+
         messages = []
         for chat_id, user_info_raw in self.get_subscribers():
             try:
@@ -995,11 +909,15 @@ class SamezuBot:
                     continue
 
                 keep_types = self._resolve_keep_types(subscription_type, source)
-                filtered_result = self._filter_result_by_slot_types(result_to_send, keep_types)
+                facilities = None
                 if source == "tokyo":
                     facilities = self._facilities_for_subscriber_sources(sources)
-                    if facilities is not None:
-                        filtered_result = self._filter_result_by_facilities(filtered_result, facilities)
+
+                filtered_result = format_check_message(
+                    check,
+                    keep_types=keep_types,
+                    keep_facilities=facilities,
+                )
 
                 if filtered_result and "❌" not in filtered_result:
                     if username and username != f"User{chat_id}":
@@ -1017,9 +935,9 @@ class SamezuBot:
 
         return messages
 
-    async def _send_notifications_to_subscribers(self, result_to_send, source=None):
+    async def _send_notifications_to_subscribers(self, check, source=None):
         """Send notifications to subscribers, filtered by source and subscription type."""
-        messages = self._notification_messages_for_subscribers(result_to_send, source=source)
+        messages = self._notification_messages_for_subscribers(check, source=source)
         if not messages:
             if not self.get_subscribers():
                 logger.warning("No subscribers to send notifications to.")
@@ -1031,10 +949,10 @@ class SamezuBot:
         await asyncio.gather(*tasks, return_exceptions=True)
         logger.info(f"Sent notifications to {len(tasks)} subscribers.")
 
-    async def _filter_result_for_subscription(self, result, subscription_type, source=None):
-        """Filter result based on subscription type and source."""
+    async def _filter_result_for_subscription(self, check, subscription_type, source=None):
+        """Filter cached scrape for subscription type and source."""
         keep_types = self._resolve_keep_types(subscription_type, source)
-        return self._filter_result_by_slot_types(result, keep_types)
+        return format_check_message(check, keep_types=keep_types)
 
     # Utility methods
     def _parse_command_args(self, context_args):
@@ -1074,8 +992,10 @@ class SamezuBot:
         if checker is None:
             checker = self.reservation_checker
 
+        cached_check = cache.get('result')
         if (
-            cache['result']
+            cached_check is not None
+            and self._cached_check_is_usable(cached_check)
             and cache['timestamp']
             and not force_check
             and self._cache_matches_navigation(cache, use_month_navigation)
@@ -1085,13 +1005,12 @@ class SamezuBot:
             cache_age_minutes = int(elapsed // 60)
             cache_age_seconds = int(elapsed % 60)
 
-            cached_result = cache['result']
             if show_all and check_source not in self.SOURCE_FACILITY_MAP:
-                result_to_show = cached_result
+                result_to_show = format_check_message(cached_check)
                 cache_type_text = "unfiltered"
             else:
-                result_to_show = self._apply_check_filters(
-                    cached_result, checker, show_all, check_source
+                result_to_show = self._format_check_for_user(
+                    cached_check, checker, show_all, check_source
                 )
                 cache_type_text = "filtered"
 

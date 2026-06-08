@@ -6,24 +6,19 @@ import unittest.mock as mock
 
 import pytest
 from run_bot import SamezuBot
-
-TOKYO_RESULT = (
-    "🎉 <b>Available Reservation Slots Found!</b>\n\n"
-    "📅 <b>06/05 (Thu)</b>\n"
-    "   🏢 <b>鮫洲試験場</b>\n"
-    "      • 住民票のある方\n"
-    "\n"
-    "🔗 <a href='http://example.com'>Book Now</a>"
+from tests.test_helpers import (
+    CHECK_KANAGAWA,
+    CHECK_TOKYO_BOTH,
+    CHECK_TOKYO_MIXED,
+    check_error,
+    check_from_slots,
 )
 
-KANAGAWA_RESULT = (
-    "🎉 <b>Available Reservation Slots Found!</b>\n\n"
-    "📅 <b>06/05 (Thu)</b>\n"
-    "   🏢 <b>外国免許四輪車</b>\n"
-    "      • 普通車ＡＭ\n"
-    "\n"
-    "🔗 <a href='http://example.com'>Book Now</a>"
+TOKYO_RESULT = check_from_slots(
+    [{"date": "06/05 (Thu)", "facility": "鮫洲試験場", "applicant_type": "住民票のある方"}],
+    facilities_label=["鮫洲試験場", "府中試験場"],
 )
+KANAGAWA_RESULT = CHECK_KANAGAWA
 
 
 def make_bot():
@@ -41,20 +36,7 @@ def test_scrape_key_maps_samezu_and_fuchu_to_tokyo():
 @pytest.mark.asyncio
 async def test_deliver_to_waiting_users_applies_per_user_check_source():
     bot = make_bot()
-    bot._update_cache_after_scrape(
-        bot.cache,
-        (
-            "🎉 <b>Available Reservation Slots Found!</b>\n\n"
-            "📅 <b>06/05 (Thu)</b>\n"
-            "   🏢 <b>鮫洲試験場</b>\n"
-            "      • 住民票のある方\n"
-            "   🏢 <b>府中試験場</b>\n"
-            "      • 住民票のある方\n"
-            "\n"
-            "🔗 <a href='http://example.com'>Book Now</a>"
-        ),
-        use_month_navigation=False,
-    )
+    bot._update_cache_after_scrape(bot.cache, CHECK_TOKYO_BOTH, use_month_navigation=False)
     sent = []
 
     async def capture_send(chat_id, text, parse_mode='HTML'):
@@ -159,19 +141,7 @@ async def test_chained_scrape_starts_for_waiters_without_cache():
 @pytest.mark.asyncio
 async def test_deliver_respects_show_all_for_queued_user():
     bot = make_bot()
-    bot._update_cache_after_scrape(
-        bot.cache,
-        (
-            "🎉 <b>Available Reservation Slots Found!</b>\n\n"
-            "📅 <b>06/05 (Thu)</b>\n"
-            "   🏢 <b>鮫洲試験場</b>\n"
-            "      • 住民票のある方\n"
-            "      • 住民票のない方\n"
-            "\n"
-            "🔗 <a href='http://example.com'>Book Now</a>"
-        ),
-        use_month_navigation=False,
-    )
+    bot._update_cache_after_scrape(bot.cache, CHECK_TOKYO_MIXED, use_month_navigation=False)
     sent = []
 
     async def capture_send(chat_id, text, parse_mode='HTML'):
@@ -211,6 +181,55 @@ async def test_concurrent_reserve_only_starts_one_background_scrape():
 
     assert sum(reserved) == 1
     assert run_count == 1
+
+
+@pytest.mark.asyncio
+async def test_error_scrape_requeues_incompatible_month_waiter():
+    bot = make_bot()
+    sent = []
+
+    async def capture_send(chat_id, text, parse_mode='HTML'):
+        sent.append((chat_id, text))
+
+    async def fail_weekly(*args, **kwargs):
+        return check_error("❌ Error during reservation check: timeout")
+
+    bot._telegram_send = capture_send
+    bot.reservation_checker.run_check = fail_weekly
+    bot.waiting_users["tokyo"].add((1, 100, None, False, False, False))
+    bot.waiting_users["tokyo"].add((2, 200, None, False, True, False))
+
+    await bot._background_check_task(None, use_month_navigation=False, scrape_key="tokyo")
+
+    assert len(sent) == 1
+    assert sent[0][0] == 100
+    assert "timeout" in sent[0][1]
+    assert len(bot.waiting_users["tokyo"]) == 1
+    assert next(iter(bot.waiting_users["tokyo"]))[4] is True
+
+
+@pytest.mark.asyncio
+async def test_exception_scrape_requeues_incompatible_month_waiter():
+    bot = make_bot()
+    sent = []
+
+    async def capture_send(chat_id, text, parse_mode='HTML'):
+        sent.append((chat_id, text))
+
+    async def explode(*args, **kwargs):
+        raise RuntimeError("browser died")
+
+    bot._telegram_send = capture_send
+    bot.reservation_checker.run_check = explode
+    bot.waiting_users["tokyo"].add((1, 100, None, False, False, False))
+    bot.waiting_users["tokyo"].add((2, 200, None, False, True, False))
+
+    await bot._background_check_task(None, use_month_navigation=False, scrape_key="tokyo")
+
+    assert len(sent) == 1
+    assert sent[0][0] == 100
+    assert "browser died" in sent[0][1]
+    assert len(bot.waiting_users["tokyo"]) == 1
 
 
 @pytest.mark.asyncio

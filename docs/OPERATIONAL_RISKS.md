@@ -6,11 +6,17 @@ Known gaps between “tests pass” and “production stays correct on the live 
 
 | Risk | Mitigation today | Planned |
 |------|------------------|---------|
-| **DOM / markup changes** | Manual checks; logs in `reservation_checker.log` | HTML fixture tests + pure parser (Phase D) |
-| **Cloudflare waiting room** | Playwright wait loop (up to ~3 min); VPS-only observation | Classified errors + optional VPS smoke job |
-| **No live Playwright in CI** | By design (flaky); hermetic unit tests only | Fixtures in GitHub Actions; live smoke on VPS optional |
+| **DOM / markup changes** | `tests/test_playwright_fixtures.py` runs Playwright against saved `#TBL` HTML; `tests/test_fixtures.py` mirrors parser logic | Re-capture fixtures when markup changes (`scripts/capture_calendar_fixture.py`) |
+| **Cloudflare waiting room** | Playwright wait loop (up to ~3 min); VPS-only observation | Optional `LIVE_SCRAPE=1 pytest -m live` smoke |
+| **No live Playwright in default pytest** | By design (flaky, network); deploy runs full suite on VPS | `tests/test_live_scrape.py` (`@pytest.mark.live`) for manual/VPS checks |
 
-`pytest` from repo root does **not** hit the reservation websites. A green CI run does not prove the calendar still parses correctly.
+Default `pytest` does **not** hit the reservation websites. Playwright fixture tests skip automatically if Chromium is not installed (`tests/conftest.py`). A green run proves fixture HTML still parses through **production selectors** when a browser is available, not that today's live calendar is unchanged.
+
+Optional live smoke:
+
+```bash
+LIVE_SCRAPE=1 ./venv/bin/python -m pytest tests/test_live_scrape.py -m live -v
+```
 
 ## Telegram delivery
 
@@ -32,4 +38,4 @@ Production notifications must go through `run_bot.py` so source, facility, and s
 1. `sudo journalctl -u samezu_bot -n 100 --no-pager`
 2. `tail -n 100 bot.log reservation_checker.log`
 3. Confirm subscriber `sources`/`type` match the slot that appeared.
-4. Check `last_notified` behavior: unchanged slot text suppresses repeat alerts.
+4. Check `last_notified` behavior: unchanged **slot signatures** suppress repeat alerts (message template changes do not re-notify).

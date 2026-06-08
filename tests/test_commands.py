@@ -4,6 +4,13 @@ class DummyApplication:
 import pytest
 import asyncio
 from run_bot import SamezuBot
+from tests.test_helpers import CHECK_KANAGAWA, check_error, check_from_slots
+
+TOKYO_RESULT = check_from_slots(
+    [{"date": "06/05 (Thu)", "facility": "鮫洲試験場", "applicant_type": "住民票のある方"}],
+    facilities_label=["鮫洲試験場"],
+)
+KANAGAWA_RESULT = CHECK_KANAGAWA
 
 class DummyUser:
     id = 12345
@@ -32,12 +39,33 @@ class DummyContext:
     bot = None
 
 @pytest.mark.asyncio
+async def test_check_does_not_serve_cached_error():
+    bot = SamezuBot()
+    update = DummyUpdate()
+    import time
+
+    bot.cache['result'] = check_error("❌ Error during reservation check: timeout")
+    bot.cache['timestamp'] = time.time()
+
+    handled = await bot._handle_cached_result(
+        update,
+        "testuser",
+        12345,
+        force_check=False,
+        show_all=False,
+        cache=bot.cache,
+        checker=bot.reservation_checker,
+    )
+    assert handled is False
+
+
+@pytest.mark.asyncio
 async def test_check_command_cache_valid():
     bot = SamezuBot()
     update = DummyUpdate()
     context = DummyContext()
     import time
-    bot._update_cache_after_scrape(bot.cache, "Test result", use_month_navigation=False)
+    bot._update_cache_after_scrape(bot.cache, TOKYO_RESULT, use_month_navigation=False)
     await bot.check_command(update, context)
     assert "Using cached result" in update.message.last_text
 
@@ -60,7 +88,7 @@ async def test_check_command_force():
     context = DummyContext()
     context.args = ["force"]
     import time
-    bot.cache['result'] = "Test result"
+    bot.cache['result'] = TOKYO_RESULT
     bot.cache['timestamp'] = time.time()
     bot.application = DummyApplication()
     bot.check_lock = asyncio.Lock()
@@ -72,7 +100,7 @@ async def test_check_month_command_cache_valid():
     bot = SamezuBot()
     update = DummyUpdate()
     context = DummyContext()
-    bot._update_cache_after_scrape(bot.cache, "Test result", use_month_navigation=True)
+    bot._update_cache_after_scrape(bot.cache, TOKYO_RESULT, use_month_navigation=True)
     await bot.check_month_command(update, context)
     assert "Using cached result" in update.message.last_text
 
@@ -82,7 +110,7 @@ async def test_check_month_rejects_weekly_cache():
     bot = SamezuBot()
     update = DummyUpdate()
     context = DummyContext()
-    bot._update_cache_after_scrape(bot.cache, "Weekly cached", use_month_navigation=False)
+    bot._update_cache_after_scrape(bot.cache, TOKYO_RESULT, use_month_navigation=False)
     bot.application = DummyApplication()
     bot.check_lock = asyncio.Lock()
     await bot.check_month_command(update, context)
@@ -95,7 +123,7 @@ async def test_check_rejects_month_cache():
     bot = SamezuBot()
     update = DummyUpdate()
     context = DummyContext()
-    bot._update_cache_after_scrape(bot.cache, "Month cached", use_month_navigation=True)
+    bot._update_cache_after_scrape(bot.cache, TOKYO_RESULT, use_month_navigation=True)
     bot.application = DummyApplication()
     bot.check_lock = asyncio.Lock()
     await bot.check_command(update, context)
@@ -121,7 +149,7 @@ async def test_check_month_command_force():
     context = DummyContext()
     context.args = ["force"]
     import time
-    bot.cache['result'] = "Test result"
+    bot.cache['result'] = TOKYO_RESULT
     bot.cache['timestamp'] = time.time()
     bot.application = DummyApplication()
     bot.check_lock = asyncio.Lock()
@@ -194,29 +222,6 @@ async def test_unsubscribe_command_not_subscribed():
 
 
 # --- _background_check_task source-aware filtering ---
-
-KANAGAWA_RESULT = (
-    "🎉 <b>Available Reservation Slots Found!</b>\n\n"
-    "📍 <b>Facilities:</b> 外国免許四輪車\n\n"
-    "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
-    "📅 <b>06/05 (Thu)</b>\n"
-    "   🏢 <b>外国免許四輪車</b>\n"
-    "      • 普通車ＡＭ\n"
-    "      • 普通車ＰＭ\n"
-    "\n"
-    "🔗 <a href='http://example.com'>Book Now</a>"
-)
-
-TOKYO_RESULT = (
-    "🎉 <b>Available Reservation Slots Found!</b>\n\n"
-    "📍 <b>Facilities:</b> 鮫洲試験場\n\n"
-    "<b>To book, click the <i>予約可能 (reservable)</i> or <i>選択中 (selected)</i> mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
-    "📅 <b>06/05 (Thu)</b>\n"
-    "   🏢 <b>鮫洲試験場</b>\n"
-    "      • 住民票のある方\n"
-    "\n"
-    "🔗 <a href='http://example.com'>Book Now</a>"
-)
 
 
 async def _run_background_check(bot, source, fake_result):
