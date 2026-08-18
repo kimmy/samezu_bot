@@ -102,6 +102,23 @@ def test_dedupe_slots_collapses_overlapping_pages():
     assert slots_signature([duplicate, duplicate]) == slots_signature([duplicate])
 
 
+def test_render_slots_message_orders_dates_chronologically():
+    slots = [
+        Slot("10/21 (水)", "外国免許四輪車", "普通車ＡＭ"),
+        Slot("10/22 (木)", "外国免許四輪車", "普通車ＡＭ"),
+        Slot("10/23 (金)", "外国免許四輪車", "普通車ＡＭ"),
+        Slot("10/20 (火)", "外国免許四輪車", "普通車ＰＭ"),
+    ]
+    msg = render_slots_message(slots, target_url=EXAMPLE_URL)
+    dates_in_order = [line for line in msg.splitlines() if line.startswith("📅")]
+    assert dates_in_order == [
+        "📅 <b>10/20 (火)</b>",
+        "📅 <b>10/21 (水)</b>",
+        "📅 <b>10/22 (木)</b>",
+        "📅 <b>10/23 (金)</b>",
+    ]
+
+
 def test_scheduler_notify_signature_ignores_rendering():
     from config_template import TARGET_SLOT_TYPES
 

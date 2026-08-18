@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import html
+import re
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 NO_SLOTS_MESSAGE = "❌ No slots"
+_DATE_MD_PATTERN = re.compile(r"(\d{1,2})/(\d{1,2})")
 
 
 @dataclass(frozen=True)
@@ -150,6 +152,15 @@ def facilities_summary(
     return ", ".join(sorted(present))
 
 
+def _date_sort_key(date: str) -> Tuple[int, int, int]:
+    """Chronological key for an ``MM/DD (weekday)`` label; unparsable dates sort last."""
+    match = _DATE_MD_PATTERN.search(date)
+    if not match:
+        return (1, 0, 0)
+    month, day = int(match.group(1)), int(match.group(2))
+    return (0, month, day)
+
+
 def render_slots_message(
     slots: Sequence[Slot],
     *,
@@ -175,7 +186,9 @@ def render_slots_message(
         "mark on your desired date on the calendar. Then proceed with the booking process.</b>\n\n"
     )
 
-    for date, facilities in slots_by_date_facility.items():
+    ordered_dates = sorted(slots_by_date_facility, key=_date_sort_key)
+    for date in ordered_dates:
+        facilities = slots_by_date_facility[date]
         message += f"📅 <b>{html.escape(date)}</b>\n"
         for facility, applicant_types in facilities.items():
             message += f"   🏢 <b>{html.escape(facility)}</b>\n"
