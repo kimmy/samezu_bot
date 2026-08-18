@@ -75,7 +75,7 @@ Each has its own cache dict (`self.cache` / `self.kanagawa_cache`). The schedule
 
 **Caching** — One `CheckResult` per scrape key (`cache` / `kanagawa_cache`). Subscriber and `/check` filters applied when rendering messages. Duration: `CACHE_DURATION` seconds (default 120s).
 
-**Scheduler notifications** — After each check, `scheduler_notify_signature()` (relevant slot types) is compared against `self.last_notified[source]`. Notifications are only sent if the slot set changed. When no relevant slots are found, `last_notified` resets so a future reappearance triggers a fresh notification.
+**Scheduler notifications** — After each check, `scheduler_notify_signature()` (relevant slot types) is compared against `self.last_notified[source]`. Notifications are only sent if the slot set changed. When no relevant slots are found, `last_notified` resets so a future reappearance triggers a fresh notification. Signatures persist in `last_notified.json` across restarts.
 
 **Tests** — Default `pytest` includes Playwright-on-fixture tests (`tests/test_playwright_fixtures.py`). Live-site smoke: `LIVE_SCRAPE=1 pytest -m live`.
 

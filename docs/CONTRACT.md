@@ -55,6 +55,7 @@ Each checker instance has its own `target_url`, `target_facilities`, `target_slo
   - facility filter (samezu/fuchu only)
   - slot-type filter (`relevant`, `ari`, `nai`, `am`, `pm`, `all`)
 - `last_notified[source]` stores a **slot signature** (`scheduler_notify_signature`: relevant types only), not rendered HTML. Duplicate alerts are suppressed until the slot set changes or disappears. **Transient scrape errors do not clear** `last_notified` (only a successful empty scrape does).
+- Signatures persist in `last_notified.json` (same directory as `subscribers.txt`) so restarts do not re-alert for unchanged slots.
 
 ## Manual `/check`
 

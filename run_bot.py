@@ -5,6 +5,7 @@ Samezu Bot - Telegram bot for checking driving test reservations
 """
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -40,6 +41,7 @@ logger = logging.getLogger(BOT_LOGGER_NAME)
 
 class SamezuBot:
     SUBSCRIBERS_FILE = 'subscribers.txt'
+    LAST_NOTIFIED_FILE = 'last_notified.json'
     TOKYO_SUBSCRIBER_SOURCES = frozenset({"samezu", "fuchu"})
     SOURCE_FACILITY_MAP = {"samezu": "鮫洲試験場", "fuchu": "府中試験場"}
 
@@ -83,7 +85,7 @@ class SamezuBot:
         }
 
         # Last scheduler-relevant slot signature per source (see scheduler_notify_signature)
-        self.last_notified: dict = {'tokyo': None, 'kanagawa': None}
+        self.last_notified: dict = self._load_last_notified()
 
         # Register command handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
@@ -97,6 +99,63 @@ class SamezuBot:
         self.application.add_handler(CommandHandler("status", self.status_command))
 
     # Subscriber management methods
+    @staticmethod
+    def _deserialize_signature(raw):
+        if raw is None:
+            return None
+        return tuple(tuple(item) for item in raw)
+
+    @staticmethod
+    def _serialize_signature(signature):
+        if signature is None:
+            return None
+        return [list(item) for item in signature]
+
+    def _load_last_notified(self):
+        """Load persisted scheduler dedup signatures (tokyo/kanagawa)."""
+        defaults = {'tokyo': None, 'kanagawa': None}
+        try:
+            with open(self.LAST_NOTIFIED_FILE, 'r') as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return defaults
+        except json.JSONDecodeError as e:
+            logger.warning(f"Invalid {self.LAST_NOTIFIED_FILE}, starting fresh: {e}")
+            return defaults
+
+        loaded = {}
+        for source in defaults:
+            loaded[source] = self._deserialize_signature(data.get(source))
+        return loaded
+
+    def _persist_last_notified(self):
+        """Atomically persist scheduler dedup signatures."""
+        payload = {
+            source: self._serialize_signature(signature)
+            for source, signature in self.last_notified.items()
+        }
+        target = os.path.abspath(self.LAST_NOTIFIED_FILE)
+        directory = os.path.dirname(target) or '.'
+        fd, temp_path = tempfile.mkstemp(dir=directory, prefix='.last_notified_', text=True)
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.write('\n')
+            os.replace(temp_path, target)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
+
+    def _set_last_notified(self, source, signature):
+        self.last_notified[source] = signature
+        try:
+            self._persist_last_notified()
+        except Exception as e:
+            logger.error(f"Failed to persist last_notified for {source}: {e}")
+
     def _read_subscriber_lines(self):
         try:
             with open(self.SUBSCRIBERS_FILE, 'r') as f:
@@ -293,7 +352,7 @@ class SamezuBot:
         )
         if signature is None:
             logger.info(f"📭 No relevant slots for {source}")
-            self.last_notified[source] = None  # Reset when slots actually disappear
+            self._set_last_notified(source, None)  # Reset when slots actually disappear
             return
 
         if signature == self.last_notified[source]:
@@ -301,7 +360,7 @@ class SamezuBot:
             return
 
         logger.info(f"🎉 New slots for {source}! Sending notifications...")
-        self.last_notified[source] = signature
+        self._set_last_notified(source, signature)
         await self._send_notifications_to_subscribers(check, source=source)
 
     async def unsubscribe_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

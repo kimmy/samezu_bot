@@ -138,6 +138,45 @@ async def test_scheduler_notifies_on_slots_found():
     assert all("🎉" in n for n in notifications_sent)
 
 
+def test_last_notified_loads_from_file(tmp_path, monkeypatch):
+    path = tmp_path / "last_notified.json"
+    path.write_text(
+        '{"tokyo": [["06/05 (Thu)", "鮫洲試験場", "住民票のある方"]], "kanagawa": null}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(SamezuBot, "LAST_NOTIFIED_FILE", str(path))
+    bot = SamezuBot()
+    assert bot.last_notified["tokyo"] == (
+        ("06/05 (Thu)", "鮫洲試験場", "住民票のある方"),
+    )
+    assert bot.last_notified["kanagawa"] is None
+
+
+@pytest.mark.asyncio
+async def test_last_notified_persisted_after_scheduler_notify(tmp_path, monkeypatch):
+    path = tmp_path / "last_notified.json"
+    monkeypatch.setattr(SamezuBot, "LAST_NOTIFIED_FILE", str(path))
+    bot = SamezuBot()
+    await _run_one_scheduler_iteration(bot, CHECK_TOKYO_ARI)
+
+    assert path.exists()
+    reloaded = SamezuBot()
+    assert reloaded.last_notified["tokyo"] == bot.last_notified["tokyo"]
+    assert reloaded.last_notified["tokyo"] is not None
+
+
+@pytest.mark.asyncio
+async def test_last_notified_cleared_in_file_when_slots_disappear(tmp_path, monkeypatch):
+    path = tmp_path / "last_notified.json"
+    monkeypatch.setattr(SamezuBot, "LAST_NOTIFIED_FILE", str(path))
+    bot = SamezuBot()
+    await _run_one_scheduler_iteration(bot, CHECK_TOKYO_ARI)
+    await _run_one_scheduler_iteration(bot, CHECK_NO_SLOTS)
+
+    reloaded = SamezuBot()
+    assert reloaded.last_notified["tokyo"] is None
+
+
 @pytest.mark.asyncio
 async def test_scheduler_last_notified_stores_slot_signature():
     bot = SamezuBot()

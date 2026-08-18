@@ -3,6 +3,7 @@ config.py
 .env
 *.log
 subscribers.txt
+last_notified.json
 
 # Python
 __pycache__/
