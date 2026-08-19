@@ -85,3 +85,28 @@ def test_kanagawa_fixture_parser_finds_configured_slots():
     assert len(am) == 1 and '08/14' in am[0]['date']
     assert len(pm) == 2
     assert {s['date'] for s in pm} == {'08/13(Thu)', '08/14(Fri)'}
+
+
+def test_saitama_calendar_fixture_exists_and_has_expected_markers():
+    html = (FIXTURES / 'saitama_calendar_sample.html').read_text(encoding='utf-8')
+    assert '外免　書類審査' in html
+    assert '【１】１回目（初めて）' in html
+    assert 'aria-label="予約可能"' in html
+    assert '08/26' in html
+    assert '2026年' in html
+
+
+def test_saitama_fixture_parser_finds_configured_slots():
+    html = (FIXTURES / 'saitama_calendar_sample.html').read_text(encoding='utf-8')
+    slots = _parse_available_slots(
+        html,
+        target_facilities=['外免　書類審査'],
+        target_slot_types=['【１】１回目（初めて）', '【２】２回目以降', '【３】免除国等'],
+    )
+    assert len(slots) == 3
+    by_type = {s['applicant_type']: s for s in slots}
+    assert set(by_type) == {'【１】１回目（初めて）', '【２】２回目以降', '【３】免除国等'}
+    assert '08/26' in by_type['【１】１回目（初めて）']['date']
+    assert '08/27' in by_type['【２】２回目以降']['date']
+    assert '08/27' in by_type['【３】免除国等']['date']
+    assert all(s['facility'] == '外免　書類審査' for s in slots)

@@ -5,6 +5,7 @@ from domain import format_check_message
 from run_bot import SamezuBot
 from tests.test_helpers import (
     CHECK_KANAGAWA,
+    CHECK_SAITAMA,
     CHECK_TOKYO_BOTH,
     check_from_slots,
 )
@@ -45,6 +46,16 @@ def test_subscriber_matches_kanagawa():
 def test_subscriber_does_not_match_kanagawa_when_tokyo_only():
     bot = make_bot()
     assert not bot._subscriber_matches_source(["samezu", "fuchu"], "kanagawa")
+
+
+def test_subscriber_matches_saitama():
+    bot = make_bot()
+    assert bot._subscriber_matches_source(["saitama"], "saitama")
+
+
+def test_subscriber_does_not_match_saitama_when_tokyo_only():
+    bot = make_bot()
+    assert not bot._subscriber_matches_source(["samezu", "fuchu"], "saitama")
 
 
 # --- _facilities_for_subscriber_sources ---
@@ -135,6 +146,25 @@ def test_notification_messages_kanagawa_reaches_kanagawa_subscriber():
 
     assert len(messages) == 1
     assert "普通車ＡＭ" in messages[0][1]
+
+
+def test_notification_messages_saitama_reaches_saitama_subscriber():
+    bot = make_bot()
+    bot.get_subscribers = lambda: [("444", "@dave|saitama|relevant")]
+
+    messages = bot._notification_messages_for_subscribers(CHECK_SAITAMA, source="saitama")
+
+    assert len(messages) == 1
+    assert "【１】１回目（初めて）" in messages[0][1]
+
+
+def test_notification_messages_tokyo_skips_saitama_only_subscriber():
+    bot = make_bot()
+    bot.get_subscribers = lambda: [("444", "@dave|saitama|relevant")]
+
+    messages = bot._notification_messages_for_subscribers(CHECK_TOKYO_BOTH, source="tokyo")
+
+    assert messages == []
 
 
 # --- _apply_check_filters for /check samezu ---

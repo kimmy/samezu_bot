@@ -4,9 +4,11 @@ from run_bot import SamezuBot
 from tests.test_helpers import (
     CHECK_KANAGAWA,
     CHECK_NO_SLOTS,
+    CHECK_SAITAMA_MIXED,
     CHECK_TOKYO_MIXED,
     CHECK_TOKYO_SPLIT,
     KANAGAWA_SLOTS,
+    SAITAMA_MIXED_SLOTS,
     check_error,
     check_from_slots,
 )
@@ -175,6 +177,31 @@ async def test_filter_subscription_passes_through_error():
     assert result == error.error
 
 
+@pytest.mark.asyncio
+async def test_filter_subscription_saitama_1_keeps_first_removes_others():
+    bot = make_bot()
+    result = await bot._filter_result_for_subscription(CHECK_SAITAMA_MIXED, "1", source="saitama")
+    assert '【１】１回目（初めて）' in result
+    assert '【２】２回目以降' not in result
+    assert '【３】免除国等' not in result
+
+
+@pytest.mark.asyncio
+async def test_filter_subscription_saitama_2_keeps_repeat_only():
+    bot = make_bot()
+    result = await bot._filter_result_for_subscription(CHECK_SAITAMA_MIXED, "2", source="saitama")
+    assert '【２】２回目以降' in result
+    assert '【１】１回目（初めて）' not in result
+
+
+@pytest.mark.asyncio
+async def test_filter_subscription_saitama_relevant_same_as_1():
+    bot = make_bot()
+    first = await bot._filter_result_for_subscription(CHECK_SAITAMA_MIXED, "1", source="saitama")
+    relevant = await bot._filter_result_for_subscription(CHECK_SAITAMA_MIXED, "relevant", source="saitama")
+    assert first == relevant
+
+
 def test_filter_slot_types_two_facilities_drops_orphan_samezu_header():
     """ARI filter must not leave 鮫洲 when only 府中 has matching bullets."""
     bot = make_bot()
@@ -333,12 +360,38 @@ async def test_kanagawa_checker_unfiltered_shows_all():
     assert '準中型車ＡＭ' in result
 
 
+# --- Saitama slot filtering ---
+
+
+@pytest.mark.asyncio
+async def test_saitama_checker_filters_to_target_slot_types():
+    bot = make_bot()
+    result = await bot.saitama_checker.process_available_slots(
+        SAITAMA_MIXED_SLOTS, send_notifications=False, filter_applicants=True
+    )
+    assert '【１】１回目（初めて）' in result
+    assert '【２】２回目以降' not in result
+    assert '【３】免除国等' not in result
+
+
+@pytest.mark.asyncio
+async def test_saitama_checker_unfiltered_shows_all():
+    bot = make_bot()
+    result = await bot.saitama_checker.process_available_slots(
+        SAITAMA_MIXED_SLOTS, send_notifications=False, filter_applicants=False
+    )
+    assert '【１】１回目（初めて）' in result
+    assert '【２】２回目以降' in result
+    assert '【３】免除国等' in result
+
+
 # --- _resolve_keep_types ---
 
 def test_resolve_keep_types_all_returns_none():
     bot = make_bot()
     assert bot._resolve_keep_types("all", "tokyo") is None
     assert bot._resolve_keep_types("all", "kanagawa") is None
+    assert bot._resolve_keep_types("all", "saitama") is None
 
 
 def test_resolve_keep_types_tokyo_ari():
@@ -366,6 +419,27 @@ def test_resolve_keep_types_kanagawa_am():
 def test_resolve_keep_types_kanagawa_pm():
     bot = make_bot()
     assert bot._resolve_keep_types("pm", "kanagawa") == ["普通車ＰＭ"]
+
+
+def test_resolve_keep_types_saitama_relevant_returns_first_only():
+    """Unlike Kanagawa's relevant-returns-both, Saitama's relevant default is first-time only."""
+    bot = make_bot()
+    assert bot._resolve_keep_types("relevant", "saitama") == ["【１】１回目（初めて）"]
+
+
+def test_resolve_keep_types_saitama_1():
+    bot = make_bot()
+    assert bot._resolve_keep_types("1", "saitama") == ["【１】１回目（初めて）"]
+
+
+def test_resolve_keep_types_saitama_2():
+    bot = make_bot()
+    assert bot._resolve_keep_types("2", "saitama") == ["【２】２回目以降"]
+
+
+def test_resolve_keep_types_saitama_3():
+    bot = make_bot()
+    assert bot._resolve_keep_types("3", "saitama") == ["【３】免除国等"]
 
 
 # --- Kanagawa slot-type filtering ---
@@ -400,12 +474,39 @@ def test_filter_kanagawa_none_returns_all():
     assert "普通車ＡＭ" in result and "普通車ＰＭ" in result
 
 
+# --- Saitama slot-type filtering ---
+
+
+def test_filter_saitama_first_only():
+    bot = make_bot()
+    result = format_check_message(CHECK_SAITAMA_MIXED, keep_types=["【１】１回目（初めて）"])
+    assert '【１】１回目（初めて）' in result
+    assert '【２】２回目以降' not in result
+    assert '【３】免除国等' not in result
+
+
+def test_filter_saitama_none_returns_all():
+    bot = make_bot()
+    result = format_check_message(CHECK_SAITAMA_MIXED, keep_types=None)
+    assert '【１】１回目（初めて）' in result
+    assert '【２】２回目以降' in result
+    assert '【３】免除国等' in result
+
+
 # --- _parse_command_args source parsing ---
 
 def test_parse_command_args_kanagawa():
     bot = make_bot()
     force, show_all, source = bot._parse_command_args(["kanagawa"])
     assert source == "kanagawa"
+    assert not force
+    assert not show_all
+
+
+def test_parse_command_args_saitama():
+    bot = make_bot()
+    force, show_all, source = bot._parse_command_args(["saitama"])
+    assert source == "saitama"
     assert not force
     assert not show_all
 

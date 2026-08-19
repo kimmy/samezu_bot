@@ -8,6 +8,7 @@ import pytest
 from run_bot import SamezuBot
 from tests.test_helpers import (
     CHECK_KANAGAWA,
+    CHECK_SAITAMA,
     CHECK_TOKYO_BOTH,
     CHECK_TOKYO_MIXED,
     check_error,
@@ -19,6 +20,7 @@ TOKYO_RESULT = check_from_slots(
     facilities_label=["鮫洲試験場", "府中試験場"],
 )
 KANAGAWA_RESULT = CHECK_KANAGAWA
+SAITAMA_RESULT = CHECK_SAITAMA
 
 
 def make_bot():
@@ -31,6 +33,7 @@ def test_scrape_key_maps_samezu_and_fuchu_to_tokyo():
     assert bot._scrape_key_for_check("fuchu") == "tokyo"
     assert bot._scrape_key_for_check(None) == "tokyo"
     assert bot._scrape_key_for_check("kanagawa") == "kanagawa"
+    assert bot._scrape_key_for_check("saitama") == "saitama"
 
 
 @pytest.mark.asyncio
@@ -95,6 +98,26 @@ async def test_force_waiter_not_served_from_stale_other_key_cache():
 
 
 @pytest.mark.asyncio
+async def test_force_waiter_not_served_from_stale_saitama_cache():
+    bot = make_bot()
+    bot.saitama_cache['result'] = SAITAMA_RESULT
+    bot.saitama_cache['timestamp'] = time.time() - 9999
+    bot.saitama_cache['use_month_navigation'] = False
+    sent = []
+
+    async def capture_send(chat_id, text, parse_mode='HTML'):
+        sent.append(chat_id)
+
+    bot._telegram_send = capture_send
+    bot.waiting_users["saitama"].add((2, 200, "saitama", False, False, True))
+
+    await bot._deliver_to_waiting_users("saitama", from_fresh_scrape=False)
+
+    assert sent == []
+    assert len(bot.waiting_users["saitama"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_other_key_waiters_served_from_valid_matching_cache():
     bot = make_bot()
     messages = []
@@ -104,6 +127,7 @@ async def test_other_key_waiters_served_from_valid_matching_cache():
 
     bot._telegram_send = capture_send
     bot._update_cache_after_scrape(bot.kanagawa_cache, KANAGAWA_RESULT, use_month_navigation=False)
+    bot._update_cache_after_scrape(bot.saitama_cache, SAITAMA_RESULT, use_month_navigation=False)
 
     async def fake_run_check(*args, **kwargs):
         return TOKYO_RESULT
@@ -111,14 +135,17 @@ async def test_other_key_waiters_served_from_valid_matching_cache():
     bot.reservation_checker.run_check = fake_run_check
     bot.waiting_users["tokyo"].add((1, 100, None, False, False, False))
     bot.waiting_users["kanagawa"].add((2, 200, "kanagawa", False, False, False))
+    bot.waiting_users["saitama"].add((3, 300, "saitama", False, False, False))
 
     await bot._background_check_task(None, source=None, scrape_key="tokyo")
 
-    assert len(messages) == 2
+    assert len(messages) == 3
     by_chat = {chat_id: text for chat_id, text in messages}
     assert "鮫洲試験場" in by_chat[100]
     assert "普通車ＡＭ" in by_chat[200]
+    assert "【１】１回目（初めて）" in by_chat[300]
     assert not bot.waiting_users["kanagawa"]
+    assert not bot.waiting_users["saitama"]
 
 
 @pytest.mark.asyncio
@@ -243,6 +270,7 @@ async def test_scheduler_skips_when_check_lock_held():
 
     bot.reservation_checker.run_check = fake_run_check
     bot.kanagawa_checker.run_check = fake_run_check
+    bot.saitama_checker.run_check = fake_run_check
 
     await bot.check_lock.acquire()
 

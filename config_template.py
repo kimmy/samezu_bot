@@ -57,3 +57,15 @@ KANAGAWA_TARGET_FACILITIES = ["外国免許四輪車"]
 
 # Level-2 rows to monitor within that group
 KANAGAWA_TARGET_SLOT_TYPES = ["普通車ＡＭ", "普通車ＰＭ"]
+
+# =====================
+# Saitama Config
+# =====================
+
+SAITAMA_TARGET_URL = "https://apply.e-tumo.jp/menkyo-saitama-u/reserve/offerList_detail?tempSeq=121595"
+
+# Level-1 row group (facility/exam category) — rowspan="3" facility cell
+SAITAMA_TARGET_FACILITIES = ["外免　書類審査"]
+
+# Level-2 rows to monitor within that group (default relevant = first-time only)
+SAITAMA_TARGET_SLOT_TYPES = ["【１】１回目（初めて）"]

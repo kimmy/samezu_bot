@@ -76,9 +76,20 @@ class SamezuBot:
             target_slot_types=KANAGAWA_TARGET_SLOT_TYPES,
             source_name="kanagawa",
         )
+        self.saitama_checker = ReservationChecker(
+            target_url=SAITAMA_TARGET_URL,
+            target_facilities=SAITAMA_TARGET_FACILITIES,
+            target_slot_types=SAITAMA_TARGET_SLOT_TYPES,
+            source_name="saitama",
+        )
 
         # Per-source caches
         self.kanagawa_cache = {
+            'result': None,
+            'timestamp': None,
+            'cache_duration': CACHE_DURATION
+        }
+        self.saitama_cache = {
             'result': None,
             'timestamp': None,
             'cache_duration': CACHE_DURATION
@@ -112,8 +123,8 @@ class SamezuBot:
         return [list(item) for item in signature]
 
     def _load_last_notified(self):
-        """Load persisted scheduler dedup signatures (tokyo/kanagawa)."""
-        defaults = {'tokyo': None, 'kanagawa': None}
+        """Load persisted scheduler dedup signatures (tokyo/kanagawa/saitama)."""
+        defaults = {'tokyo': None, 'kanagawa': None, 'saitama': None}
         try:
             with open(self.LAST_NOTIFIED_FILE, 'r') as f:
                 data = json.load(f)
@@ -286,7 +297,7 @@ class SamezuBot:
             logger.info("🛑 Automatic checking scheduler stopped")
 
     async def _run_scheduled_checks(self):
-        """Run Tokyo + Kanagawa scheduled scrapes and update caches."""
+        """Run Tokyo + Kanagawa + Saitama scheduled scrapes and update caches."""
         logger.info("🔄 Running scheduled check...")
 
         if self.check_lock.locked():
@@ -307,6 +318,13 @@ class SamezuBot:
                 source="kanagawa",
             )
             await self._drain_waiting_queues_after_scrape("kanagawa")
+
+            await self._run_scheduled_check(
+                checker=self.saitama_checker,
+                cache=self.saitama_cache,
+                source="saitama",
+            )
+            await self._drain_waiting_queues_after_scrape("saitama")
 
         await self._start_chained_scrapes_for_remaining_waiters()
         logger.info("✅ Scheduled check completed")
@@ -385,14 +403,17 @@ class SamezuBot:
         """Handle /subscribe command.
 
         Usage: /subscribe [sources] [type]
-          sources: samezu, fuchu, kanagawa (space-separated; default = all three)
-          type:    all, ari, nai, relevant (default = relevant)
+          sources: samezu, fuchu, kanagawa, saitama (space-separated; default = samezu+fuchu+kanagawa —
+                   saitama is opt-in only and never included by default)
+          type:    all, ari, nai, am, pm, 1, 2, 3, relevant (default = relevant)
 
         Examples:
-          /subscribe                    → all sources, relevant type
+          /subscribe                    → samezu+fuchu+kanagawa, relevant type
           /subscribe kanagawa           → kanagawa only, relevant type
           /subscribe samezu fuchu       → samezu + fuchu, relevant type
           /subscribe kanagawa all       → kanagawa, all slot types
+          /subscribe saitama            → saitama only, relevant type (【１】１回目（初めて）)
+          /subscribe saitama 2          → saitama, 【２】２回目以降 only
         """
         chat_id = update.effective_chat.id
         user = update.effective_user
@@ -407,15 +428,18 @@ class SamezuBot:
             username = f"User{chat_id}"
 
         # Parse args into sources and type
-        source_keywords = {"samezu", "fuchu", "kanagawa"}
-        type_keywords = {"all", "relevant", "nai", "ari", "am", "pm", "すべて", "全て", "ない方", "ある方"}
+        source_keywords = {"samezu", "fuchu", "kanagawa", "saitama"}
+        type_keywords = {
+            "all", "relevant", "nai", "ari", "am", "pm", "1", "2", "3",
+            "すべて", "全て", "ない方", "ある方",
+        }
 
         args_lower = [a.lower() for a in (context.args or [])]
         sources = [a for a in args_lower if a in source_keywords]
         type_args = [a for a in args_lower if a in type_keywords]
 
         if not sources:
-            sources = ["samezu", "fuchu", "kanagawa"]
+            sources = ["samezu", "fuchu", "kanagawa"]  # saitama is opt-in only, never a default
 
         subscription_type = "relevant"
         if type_args:
@@ -430,6 +454,8 @@ class SamezuBot:
                 subscription_type = "am"
             elif arg == "pm":
                 subscription_type = "pm"
+            elif arg in ["1", "2", "3"]:
+                subscription_type = arg
 
         sources_str = ",".join(sources)
         user_info = f"{username}|{sources_str}|{subscription_type}"
@@ -438,13 +464,23 @@ class SamezuBot:
 
         sources_display = ", ".join(sources)
         is_kanagawa_only = sources == ["kanagawa"]
+        is_saitama_only = sources == ["saitama"]
+        if is_kanagawa_only:
+            relevant_display = "普通車ＡＭ &amp; ＰＭ (Kanagawa)"
+        elif is_saitama_only:
+            relevant_display = "【１】１回目（初めて） (Saitama)"
+        else:
+            relevant_display = "住民票のある方 (Tokyo)"
         type_display = {
             "all": "ALL slot types",
             "nai": "住民票のない方 only (Tokyo)",
             "ari": "住民票のある方 only (Tokyo)",
             "am": "普通車ＡＭ only (Kanagawa)",
             "pm": "普通車ＰＭ only (Kanagawa)",
-            "relevant": "普通車ＡＭ &amp; ＰＭ (Kanagawa)" if is_kanagawa_only else "住民票のある方 (Tokyo)",
+            "1": "【１】１回目（初めて） only (Saitama)",
+            "2": "【２】２回目以降 only (Saitama)",
+            "3": "【３】免除国等 only (Saitama)",
+            "relevant": relevant_display,
         }[subscription_type]
 
         action = "Updated" if was_subscribed else "Subscribed"
@@ -460,7 +496,8 @@ class SamezuBot:
         """Handle /start command"""
         welcome_message = (
             "🎉 <b>Welcome to Samezu Bot!</b>\n\n"
-            "This bot monitors driving test reservation slots for Tokyo (府中・鮫洲) and Kanagawa (外国免許四輪車).\n\n"
+            "This bot monitors driving test reservation slots for Tokyo (府中・鮫洲), Kanagawa (外国免許四輪車), "
+            "and Saitama (外免　書類審査).\n\n"
             "<b>Available commands:</b>\n"
             "/check - Check for available slots\n"
             "/subscribe - Subscribe to notifications\n"
@@ -474,7 +511,7 @@ class SamezuBot:
         """Handle /check command.
 
         Usage: /check [source] [all] [force]
-          source: samezu, fuchu, kanagawa (default = tokyo, i.e. samezu+fuchu)
+          source: samezu, fuchu, kanagawa, saitama (default = tokyo, i.e. samezu+fuchu)
         """
         user_id = update.effective_user.id
         user_name = update.effective_user.first_name or "User"
@@ -486,15 +523,14 @@ class SamezuBot:
         await update.message.reply_text("🔍 Checking for available slots...\n\nPlease wait, this may take up to 30 seconds.")
         await asyncio.sleep(0)
 
-        checker = self.kanagawa_checker if source == "kanagawa" else self.reservation_checker
-        cache = self.kanagawa_cache if source == "kanagawa" else self.cache
+        scrape_key = self._scrape_key_for_check(source)
+        checker, cache = self._checker_and_cache_for_scrape_key(scrape_key)
         if await self._handle_cached_result(
             update, user_name, user_id, force_check, show_all, cache=cache, checker=checker,
             check_source=source, use_month_navigation=False,
         ):
             return
 
-        scrape_key = self._scrape_key_for_check(source)
         self._enqueue_waiting_user(
             scrape_key, user_id, update.effective_chat.id, source, show_all,
             use_month_navigation=False, force_check=force_check,
@@ -524,15 +560,14 @@ class SamezuBot:
         await update.message.reply_text("🔍 Checking for available slots using month navigation...\n\nPlease wait, this may take up to 30 seconds.")
         await asyncio.sleep(0)
 
-        checker = self.kanagawa_checker if source == "kanagawa" else self.reservation_checker
-        cache = self.kanagawa_cache if source == "kanagawa" else self.cache
+        scrape_key = self._scrape_key_for_check(source)
+        checker, cache = self._checker_and_cache_for_scrape_key(scrape_key)
         if await self._handle_cached_result(
             update, user_name, user_id, force_check, show_all, cache=cache, checker=checker,
             check_source=source, use_month_navigation=True,
         ):
             return
 
-        scrape_key = self._scrape_key_for_check(source)
         self._enqueue_waiting_user(
             scrape_key, user_id, update.effective_chat.id, source, show_all,
             use_month_navigation=True, force_check=force_check,
@@ -576,13 +611,15 @@ class SamezuBot:
 
     def _scrape_key_for_check(self, check_source):
         """Map /check source arg to cache/checker bucket."""
-        if check_source == "kanagawa":
-            return "kanagawa"
+        if check_source in ("kanagawa", "saitama"):
+            return check_source
         return "tokyo"
 
     def _checker_and_cache_for_scrape_key(self, scrape_key):
         if scrape_key == "kanagawa":
             return self.kanagawa_checker, self.kanagawa_cache
+        if scrape_key == "saitama":
+            return self.saitama_checker, self.saitama_cache
         return self.reservation_checker, self.cache
 
     def _update_cache_after_scrape(self, cache, check, use_month_navigation):
@@ -813,21 +850,26 @@ class SamezuBot:
             f"/help — This message\n\n"
             f"<b>Sources:</b>\n"
             f"• <b>tokyo</b> (default) — 府中試験場 &amp; 鮫洲試験場\n"
-            f"• <b>kanagawa</b> — 外国免許四輪車 (普通車ＡＭ/ＰＭ)\n\n"
+            f"• <b>kanagawa</b> — 外国免許四輪車 (普通車ＡＭ/ＰＭ)\n"
+            f"• <b>saitama</b> — 外免　書類審査 (opt-in only, not in default subscribe)\n\n"
             f"<b>Check examples:</b>\n"
             f"• <code>/check</code> — Tokyo, relevant slots\n"
             f"• <code>/check kanagawa</code> — Kanagawa slots\n"
+            f"• <code>/check saitama</code> — Saitama slots (【１】１回目（初めて）)\n"
             f"• <code>/check all</code> — Tokyo, all slot types\n"
             f"• <code>/check kanagawa force</code> — Kanagawa, skip cache\n\n"
             f"<b>Subscribe examples:</b>\n"
-            f"• <code>/subscribe</code> — All sources, relevant defaults\n"
+            f"• <code>/subscribe</code> — Tokyo + Kanagawa (samezu, fuchu, kanagawa), relevant defaults\n"
             f"• <code>/subscribe kanagawa</code> — Kanagawa only (普通車ＡＭ/ＰＭ)\n"
             f"• <code>/subscribe samezu fuchu</code> — Tokyo only (住民票のある方)\n"
             f"• <code>/subscribe kanagawa am</code> — Kanagawa 普通車ＡＭ only\n"
             f"• <code>/subscribe kanagawa pm</code> — Kanagawa 普通車ＰＭ only\n"
             f"• <code>/subscribe nai</code> — Tokyo 住民票のない方 only\n"
             f"• <code>/subscribe ari</code> — Tokyo 住民票のある方 only\n"
-            f"• <code>/subscribe all</code> — All sources, all slot types\n\n"
+            f"• <code>/subscribe saitama</code> — Saitama only, 【１】１回目（初めて）\n"
+            f"• <code>/subscribe saitama 2</code> — Saitama 【２】２回目以降 only\n"
+            f"• <code>/subscribe saitama 3</code> — Saitama 【３】免除国等 only\n"
+            f"• <code>/subscribe all</code> — Default sources, all slot types\n\n"
             f"<b>Auto-check interval:</b> every {CHECK_INTERVAL}s\n"
             f"<b>Cache duration:</b> {CACHE_DURATION}s"
         )
@@ -854,7 +896,8 @@ class SamezuBot:
             f"{status}\n\n"
             f"<b>Cache:</b>\n"
             f"• {cache_line('Tokyo', self.cache)}\n"
-            f"• {cache_line('Kanagawa', self.kanagawa_cache)}"
+            f"• {cache_line('Kanagawa', self.kanagawa_cache)}\n"
+            f"• {cache_line('Saitama', self.saitama_cache)}"
         )
         await update.message.reply_text(msg, parse_mode='HTML')
 
@@ -875,7 +918,8 @@ class SamezuBot:
         message = (
             f"📊 <b>Cache Information</b>\n\n"
             f"• {format_cache('Tokyo', self.cache)}\n"
-            f"• {format_cache('Kanagawa', self.kanagawa_cache)}\n\n"
+            f"• {format_cache('Kanagawa', self.kanagawa_cache)}\n"
+            f"• {format_cache('Saitama', self.saitama_cache)}\n\n"
             f"⏰ Duration: {CACHE_DURATION // 60} minutes"
         )
         await update.message.reply_text(message, parse_mode='HTML')
@@ -887,7 +931,9 @@ class SamezuBot:
             f"🗼 <b>Tokyo</b> (府中・鮫洲)\n"
             f"<a href='{TARGET_URL}'>Book Tokyo slot</a>\n\n"
             f"🏔 <b>Kanagawa</b> (外国免許四輪車)\n"
-            f"<a href='{KANAGAWA_TARGET_URL}'>Book Kanagawa slot</a>"
+            f"<a href='{KANAGAWA_TARGET_URL}'>Book Kanagawa slot</a>\n\n"
+            f"🌻 <b>Saitama</b> (外免　書類審査)\n"
+            f"<a href='{SAITAMA_TARGET_URL}'>Book Saitama slot</a>"
         )
         await update.message.reply_text(link_message, parse_mode='HTML')
 
@@ -895,8 +941,6 @@ class SamezuBot:
         """Whether a subscriber should receive alerts for a scrape source."""
         if not notify_source:
             return True
-        if notify_source == "kanagawa":
-            return "kanagawa" in subscriber_sources
         if notify_source == "tokyo":
             return bool(set(subscriber_sources) & self.TOKYO_SUBSCRIBER_SOURCES)
         return notify_source in subscriber_sources
@@ -931,10 +975,12 @@ class SamezuBot:
 
         Tokyo types:  住民票のある方, 住民票のない方
         Kanagawa types: 普通車ＡＭ, 普通車ＰＭ
+        Saitama types: 【１】１回目（初めて）, 【２】２回目以降, 【３】免除国等
 
         Returns None to mean "keep all".
         """
         is_kanagawa = source == "kanagawa"
+        is_saitama = source == "saitama"
         if subscription_type == "all":
             return None
         if is_kanagawa:
@@ -944,6 +990,15 @@ class SamezuBot:
                 return ["普通車ＰＭ"]
             # relevant / default for kanagawa = both AM and PM
             return list(KANAGAWA_TARGET_SLOT_TYPES)
+        elif is_saitama:
+            if subscription_type == "1":
+                return ["【１】１回目（初めて）"]
+            if subscription_type == "2":
+                return ["【２】２回目以降"]
+            if subscription_type == "3":
+                return ["【３】免除国等"]
+            # relevant / default for saitama = first-time only
+            return list(SAITAMA_TARGET_SLOT_TYPES)
         else:
             if subscription_type == "nai":
                 return ["住民票のない方"]
@@ -1018,7 +1073,7 @@ class SamezuBot:
         """Parse command arguments for force, filtering, and source options.
 
         Returns (force_check, show_all, source).
-        source is "kanagawa", "samezu", "fuchu", or None (= default Tokyo).
+        source is "kanagawa", "saitama", "samezu", "fuchu", or None (= default Tokyo).
         """
         force_check = False
         show_all = False
@@ -1031,6 +1086,8 @@ class SamezuBot:
                 show_all = True
             if "kanagawa" in args_lower:
                 source = "kanagawa"
+            elif "saitama" in args_lower:
+                source = "saitama"
             elif "samezu" in args_lower:
                 source = "samezu"
             elif "fuchu" in args_lower:

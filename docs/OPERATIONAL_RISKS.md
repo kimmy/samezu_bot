@@ -31,7 +31,7 @@ Production notifications must go through `run_bot.py` so source, facility, and s
 
 - Use `./scripts/deploy.sh` (pull → `pytest` → `systemctl restart`).
 - After deploy, confirm both `bot.log` and `reservation_checker.log` receive lines.
-- If alerts look wrong, compare scheduler source (`tokyo`/`kanagawa`) with subscriber lines in `subscribers.txt` — see [CONTRACT.md](./CONTRACT.md).
+- If alerts look wrong, compare scheduler source (`tokyo`/`kanagawa`/`saitama`) with subscriber lines in `subscribers.txt` — see [CONTRACT.md](./CONTRACT.md).
 
 ## Debugging a missed alert (< 5 minutes)
 

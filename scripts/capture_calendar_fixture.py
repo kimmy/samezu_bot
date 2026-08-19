@@ -15,6 +15,7 @@ configure_logging()
 
 from config_template import (  # noqa: E402
     KANAGAWA_TARGET_URL,
+    SAITAMA_TARGET_URL,
     TARGET_URL,
     HEADLESS,
     TIMEOUT,
@@ -24,6 +25,7 @@ from reservation_checker_playwright import ReservationChecker  # noqa: E402
 FIXTURE_MAP = {
     'tokyo': (TARGET_URL, REPO_ROOT / 'tests/fixtures/tokyo_calendar_sample.html'),
     'kanagawa': (KANAGAWA_TARGET_URL, REPO_ROOT / 'tests/fixtures/kanagawa_calendar_sample.html'),
+    'saitama': (SAITAMA_TARGET_URL, REPO_ROOT / 'tests/fixtures/saitama_calendar_sample.html'),
 }
 
 
@@ -64,7 +66,7 @@ def main():
     parser.add_argument(
         'source',
         choices=sorted(FIXTURE_MAP),
-        help='tokyo or kanagawa',
+        help='tokyo, kanagawa, or saitama',
     )
     args = parser.parse_args()
     _, path = FIXTURE_MAP[args.source]

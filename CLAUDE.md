@@ -59,27 +59,28 @@ The bot has two main modules and a config layer:
 
 **`domain.py`** — `Slot` and `CheckResult` types; `filter_slots()`, `render_slots_message()`, `format_check_message()`.
 
-**`reservation_checker_playwright.py`** — Playwright scraper. Returns `CheckResult` from `run_check()`; detects slots via `aria-label="予約可能"`. Handles Kanagawa calendar `rowspan` on facility cells. Two instances (Tokyo + Kanagawa).
+**`reservation_checker_playwright.py`** — Playwright scraper. Returns `CheckResult` from `run_check()`; detects slots via `aria-label="予約可能"`. Handles Kanagawa/Saitama calendar `rowspan` on facility cells. Three instances (Tokyo + Kanagawa + Saitama).
 
 **Config layer** — Both modules do `from config_template import *` then attempt `import config` to override. `config_template.py` provides safe defaults; `config.py` (gitignored) holds local overrides. On the VPS, a `.env` or the systemd unit supplies `TELEGRAM_BOT_TOKEN`.
 
-**Multi-source design** — Two `ReservationChecker` instances run in `SamezuBot`:
+**Multi-source design** — Three `ReservationChecker` instances run in `SamezuBot`:
 - `self.reservation_checker` — Tokyo (府中試験場, 鮫洲試験場), slot type filter: `住民票のある方`
 - `self.kanagawa_checker` — Kanagawa (外国免許四輪車), slot type filter: `普通車ＡＭ`, `普通車ＰＭ`
+- `self.saitama_checker` — Saitama (外免　書類審査, foreign license conversion document screening), slot type filter: `【１】１回目（初めて）` (opt-in only — never in a default/legacy "all sources" subscription)
 
-Each has its own cache dict (`self.cache` / `self.kanagawa_cache`). The scheduler runs both and notifies subscribers per their selected sources.
+Each has its own cache dict (`self.cache` / `self.kanagawa_cache` / `self.saitama_cache`). The scheduler runs all three and notifies subscribers per their selected sources.
 
 **Subscriber storage** — `subscribers.txt` stores one subscriber per line as `chat_id|username|sources|type` (pipe-delimited).
-- `sources`: comma-separated list — `samezu`, `fuchu`, `kanagawa` (old 2-field entries default to all sources)
-- `type`: `relevant` (default), `all`, `nai` (住民票のない方 only), `ari` (住民票のある方 only), `am` (普通車ＡＭ only, Kanagawa), `pm` (普通車ＰＭ only, Kanagawa)
+- `sources`: comma-separated list — `samezu`, `fuchu`, `kanagawa`, `saitama` (old 2-field entries default to `samezu`, `fuchu`, `kanagawa` — `saitama` requires explicit opt-in)
+- `type`: `relevant` (default), `all`, `nai` (住民票のない方 only), `ari` (住民票のある方 only), `am` (普通車ＡＭ only, Kanagawa), `pm` (普通車ＰＭ only, Kanagawa), `1`/`2`/`3` (Saitama: 【１】１回目（初めて）/ 【２】２回目以降 / 【３】免除国等)
 
-**Caching** — One `CheckResult` per scrape key (`cache` / `kanagawa_cache`). Subscriber and `/check` filters applied when rendering messages. Duration: `CACHE_DURATION` seconds (default 120s).
+**Caching** — One `CheckResult` per scrape key (`cache` / `kanagawa_cache` / `saitama_cache`). Subscriber and `/check` filters applied when rendering messages. Duration: `CACHE_DURATION` seconds (default 120s).
 
 **Scheduler notifications** — After each check, `scheduler_notify_signature()` (relevant slot types) is compared against `self.last_notified[source]`. Notifications are only sent if the slot set changed. When no relevant slots are found, `last_notified` resets so a future reappearance triggers a fresh notification. Signatures persist in `last_notified.json` across restarts.
 
 **Tests** — Default `pytest` includes Playwright-on-fixture tests (`tests/test_playwright_fixtures.py`). Live-site smoke: `LIVE_SCRAPE=1 pytest -m live`.
 
-**Concurrency** — `check_lock` (an `asyncio.Lock`) prevents concurrent scrapes. `waiting_users` is keyed by scrape key (`tokyo` / `kanagawa`); incompatible waiters are re-queued and chained scrapes run via `_start_chained_scrapes_for_remaining_waiters()`. Scheduler source `tokyo` matches subscriber sources `samezu` / `fuchu`.
+**Concurrency** — `check_lock` (an `asyncio.Lock`) prevents concurrent scrapes. `waiting_users` is keyed by scrape key (`tokyo` / `kanagawa` / `saitama`); incompatible waiters are re-queued and chained scrapes run via `_start_chained_scrapes_for_remaining_waiters()`. Scheduler source `tokyo` matches subscriber sources `samezu` / `fuchu`.
 
 ## Key Configuration Values (config_template.py)
 
@@ -91,6 +92,9 @@ Each has its own cache dict (`self.cache` / `self.kanagawa_cache`). The schedule
 | `KANAGAWA_TARGET_URL` | e-kanagawa URL | Kanagawa reservation page |
 | `KANAGAWA_TARGET_FACILITIES` | 外国免許四輪車 | Kanagawa level-1 row filter |
 | `KANAGAWA_TARGET_SLOT_TYPES` | 普通車ＡＭ, 普通車ＰＭ | Kanagawa level-2 row filter |
+| `SAITAMA_TARGET_URL` | apply.e-tumo.jp URL | Saitama reservation page (外国免許切替 書類審査) |
+| `SAITAMA_TARGET_FACILITIES` | 外免　書類審査 | Saitama level-1 row filter |
+| `SAITAMA_TARGET_SLOT_TYPES` | 【１】１回目（初めて） | Saitama level-2 row filter (default relevant = first-time only) |
 | `CHECK_INTERVAL` | 300s | Scheduler frequency |
 | `CACHE_DURATION` | 120s | How long cached results are valid |
 | `HEADLESS` | True | Set False for browser debugging |

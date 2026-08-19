@@ -155,7 +155,7 @@ class ReservationChecker:
         second_text = cls._normalize_label(second_text)
 
         for facility in target_facilities:
-            if facility in first_text:
+            if cls._normalize_label(facility) in first_text:
                 return facility, facility, second_text, 2
 
         if current_facility:

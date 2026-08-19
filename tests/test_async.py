@@ -3,7 +3,13 @@ import asyncio
 import unittest.mock as mock
 from domain import format_check_message
 from run_bot import SamezuBot
-from tests.test_helpers import CHECK_NO_SLOTS, CHECK_TOKYO_ARI, check_error, check_from_slots
+from tests.test_helpers import (
+    CHECK_NO_SLOTS,
+    CHECK_SAITAMA,
+    CHECK_TOKYO_ARI,
+    check_error,
+    check_from_slots,
+)
 
 @pytest.mark.asyncio
 async def test_subscribe_command(monkeypatch):
@@ -55,6 +61,43 @@ async def _run_one_scheduler_iteration(bot, run_check_result):
 
     bot.reservation_checker.run_check = fake_run_check
     bot.kanagawa_checker.run_check = fake_run_check
+    bot.saitama_checker.run_check = fake_run_check
+    bot._send_notifications_to_subscribers = fake_send_notifications
+
+    with mock.patch('asyncio.sleep', fast_sleep):
+        task = asyncio.create_task(bot._scheduler_loop())
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    return notifications_sent
+
+
+async def _run_one_scheduler_iteration_saitama(bot, saitama_result):
+    """Isolate the Saitama scheduler result — tokyo/kanagawa report no slots."""
+    call_count = 0
+
+    async def fast_sleep(_):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 1:
+            raise asyncio.CancelledError()
+
+    async def fake_no_slots(*args, **kwargs):
+        return CHECK_NO_SLOTS
+
+    async def fake_saitama(*args, **kwargs):
+        return saitama_result
+
+    notifications_sent = []
+
+    async def fake_send_notifications(check, source=None):
+        notifications_sent.append(format_check_message(check))
+
+    bot.reservation_checker.run_check = fake_no_slots
+    bot.kanagawa_checker.run_check = fake_no_slots
+    bot.saitama_checker.run_check = fake_saitama
     bot._send_notifications_to_subscribers = fake_send_notifications
 
     with mock.patch('asyncio.sleep', fast_sleep):
@@ -74,6 +117,7 @@ async def test_scheduler_populates_cache_before_first_sleep():
     assert bot.cache['result'] == CHECK_NO_SLOTS
     assert bot.cache['timestamp'] is not None
     assert bot.kanagawa_cache['result'] == CHECK_NO_SLOTS
+    assert bot.saitama_cache['result'] == CHECK_NO_SLOTS
 
 
 @pytest.mark.asyncio
@@ -150,6 +194,7 @@ def test_last_notified_loads_from_file(tmp_path, monkeypatch):
         ("06/05 (Thu)", "鮫洲試験場", "住民票のある方"),
     )
     assert bot.last_notified["kanagawa"] is None
+    assert bot.last_notified["saitama"] is None  # missing key defaults to None, no migration needed
 
 
 @pytest.mark.asyncio
@@ -202,3 +247,29 @@ async def test_scheduler_notifies_again_after_slots_clear_and_reappear():
     await _run_one_scheduler_iteration(bot, CHECK_NO_SLOTS)  # slots gone — resets last_notified
     notifications_sent = await _run_one_scheduler_iteration(bot, CHECK_TOKYO_ARI)  # same slots reappear
     assert len(notifications_sent) >= 1, "Should notify again after slots cleared and reappeared"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_notifies_on_slots_found_saitama():
+    bot = SamezuBot()
+    notifications_sent = await _run_one_scheduler_iteration_saitama(bot, CHECK_SAITAMA)
+    assert len(notifications_sent) == 1
+    assert "🎉" in notifications_sent[0]
+    assert "【１】１回目（初めて）" in notifications_sent[0]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_does_not_notify_duplicate_saitama():
+    bot = SamezuBot()
+    await _run_one_scheduler_iteration_saitama(bot, CHECK_SAITAMA)
+    notifications_sent = await _run_one_scheduler_iteration_saitama(bot, CHECK_SAITAMA)
+    assert notifications_sent == [], "Scheduler should not re-notify when Saitama slots are unchanged"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_notifies_again_after_saitama_slots_clear_and_reappear():
+    bot = SamezuBot()
+    await _run_one_scheduler_iteration_saitama(bot, CHECK_SAITAMA)
+    await _run_one_scheduler_iteration_saitama(bot, CHECK_NO_SLOTS)
+    notifications_sent = await _run_one_scheduler_iteration_saitama(bot, CHECK_SAITAMA)
+    assert len(notifications_sent) == 1, "Should notify again after Saitama slots cleared and reappeared"

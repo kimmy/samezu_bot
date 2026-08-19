@@ -40,4 +40,5 @@ Save the live reservation table HTML into `tests/fixtures/` (for parser tests):
 ```bash
 python scripts/capture_calendar_fixture.py kanagawa
 python scripts/capture_calendar_fixture.py tokyo
+python scripts/capture_calendar_fixture.py saitama
 ```

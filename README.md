@@ -1,13 +1,13 @@
 # Samezu Bot
 
-Telegram bot that monitors **Tokyo** (府中・鮫洲) and **Kanagawa** (外国免許四輪車) driving-test reservation calendars and notifies subscribers when slots open.
+Telegram bot that monitors **Tokyo** (府中・鮫洲), **Kanagawa** (外国免許四輪車), and **Saitama** (外免　書類審査) driving-license reservation calendars and notifies subscribers when slots open.
 
 **Production entrypoint:** `python run_bot.py` (systemd on VPS). See [docs/CONTRACT.md](docs/CONTRACT.md) for source routing, cache, and notification rules.
 
 ## Features
 
-- Automated checks every 5 minutes (Tokyo + Kanagawa)
-- Per-subscriber sources (`samezu`, `fuchu`, `kanagawa`) and slot-type filters (`ari`, `nai`, `am`, `pm`, `all`)
+- Automated checks every 5 minutes (Tokyo + Kanagawa + Saitama)
+- Per-subscriber sources (`samezu`, `fuchu`, `kanagawa`, `saitama` — saitama is opt-in only) and slot-type filters (`ari`, `nai`, `am`, `pm`, `1`, `2`, `3`, `all`)
 - Manual `/check` and `/check_month` with shared scrape lock and per-source wait queues
 - Result cache with duplicate-notification suppression
 - Playwright scraper (headless Chromium) with Cloudflare waiting-room handling
@@ -45,6 +45,7 @@ python run_bot.py
 | `/check` | Check slots (2-week navigation; Tokyo default) |
 | `/check_month` | Same as `/check` with 1-month navigation |
 | `/check kanagawa` | Kanagawa calendar |
+| `/check saitama` | Saitama calendar (【１】１回目（初めて）) |
 | `/check samezu` / `/check fuchu` | Tokyo, single facility |
 | `/check force` | Fresh scrape (ignore cache) |
 | `/check all` | All slot types for selected source |
@@ -63,10 +64,12 @@ Stored in `subscribers.txt` as `chat_id|username|sources|type`.
 /subscribe kanagawa                   # Kanagawa only
 /subscribe samezu fuchu               # Tokyo facilities only
 /subscribe kanagawa am                # 普通車ＡＭ only
+/subscribe saitama                    # Saitama only (opt-in), 【１】１回目（初めて）
+/subscribe saitama 2                  # Saitama 【２】２回目以降 only
 /subscribe nai | ari | pm | all       # Slot-type filters
 ```
 
-Tokyo “relevant” default: 住民票のある方. Kanagawa relevant: 普通車ＡＭ and 普通車ＰＭ.
+Tokyo “relevant” default: 住民票のある方. Kanagawa relevant: 普通車ＡＭ and 普通車ＰＭ. Saitama relevant: 【１】１回目（初めて）only. Saitama is never included in a plain `/subscribe` with no sources — it must be requested explicitly.
 
 ## Sources (subscriber vs scheduler)
 
@@ -76,6 +79,7 @@ Tokyo “relevant” default: 住民票のある方. Kanagawa relevant: 普通�
 | `fuchu` | `tokyo` | 府中試験場 |
 | `samezu` + `fuchu` | `tokyo` | both |
 | `kanagawa` | `kanagawa` | 外国免許四輪車 |
+| `saitama` | `saitama` | 外免　書類審査 |
 
 Details: [docs/CONTRACT.md](docs/CONTRACT.md).
 
@@ -90,6 +94,7 @@ Defaults live in `config_template.py`; override in `config.py` (gitignored) or v
 | `CACHE_DURATION` | 120 | Cache TTL (seconds) |
 | `TARGET_FACILITIES` / `TARGET_SLOT_TYPES` | Tokyo | 府中・鮫洲, 住民票のある方 |
 | `KANAGAWA_*` | — | Kanagawa URL, facility, AM/PM types |
+| `SAITAMA_*` | — | Saitama URL, facility, 【１】【２】【３】 types |
 | `HEADLESS` | `True` | Playwright headless mode |
 | `TIMEOUT` | 30000 | Page load timeout (ms) |
 

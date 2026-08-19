@@ -13,6 +13,7 @@ pytestmark = pytest.mark.usefixtures("chromium_available")
 from config_template import (
     KANAGAWA_TARGET_FACILITIES,
     KANAGAWA_TARGET_SLOT_TYPES,
+    SAITAMA_TARGET_FACILITIES,
     TARGET_FACILITIES,
 )
 from reservation_checker_playwright import ReservationChecker
@@ -47,6 +48,25 @@ async def test_playwright_parses_kanagawa_fixture_including_pm_rowspan():
     assert len(am) == 1 and "08/14" in am[0].date
     assert len(pm) == 2
     assert all(s.facility == "外国免許四輪車" for s in slots)
+
+
+@pytest.mark.asyncio
+async def test_playwright_parses_saitama_fixture_including_rowspan():
+    checker = ReservationChecker(
+        target_facilities=SAITAMA_TARGET_FACILITIES,
+        target_slot_types=[],
+        source_name="saitama",
+    )
+    html = (FIXTURES / "saitama_calendar_sample.html").read_text(encoding="utf-8")
+    slots = await _slots_from_fixture_html(checker, html)
+
+    assert len(slots) == 3
+    by_type = {s.applicant_type: s for s in slots}
+    assert set(by_type) == {"【１】１回目（初めて）", "【２】２回目以降", "【３】免除国等"}
+    assert "08/26" in by_type["【１】１回目（初めて）"].date
+    assert "08/27" in by_type["【２】２回目以降"].date
+    assert "08/27" in by_type["【３】免除国等"].date
+    assert all(s.facility == "外免　書類審査" for s in slots)
 
 
 @pytest.mark.asyncio
